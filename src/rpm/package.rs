@@ -25,7 +25,7 @@ use super::Lead;
 ///
 /// Can either be created using the [`PackageBuilder`](crate::PackageBuilder)
 /// or used with [`parse`](`self::Package::parse`) to obtain from a file.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Package {
     /// Header and metadata structures.
     ///
@@ -169,8 +169,8 @@ impl Package {
     /// # Examples
     /// ```
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut package = rpm::Package::open("test_assets/ima_signed.rpm")?;
-    /// let raw_secret_key = std::fs::read("./test_assets/secret_key.asc")?;
+    /// let mut package = rpm::Package::open("tests/assets/RPMS/noarch/rpm-basic-2.3.4-5.el9.noarch.rpm")?;
+    /// let raw_secret_key = std::fs::read("./tests/assets/signing_keys/secret_rsa4096.asc")?;
     /// let signer = rpm::signature::pgp::Signer::load_from_asc_bytes(&raw_secret_key)?;
     /// // It's recommended to use timestamp of last commit in your VCS
     /// let source_date = 1_600_000_000;
@@ -387,7 +387,7 @@ impl Package {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PackageMetadata {
     pub lead: Lead,
     pub signature: Header<IndexSignatureTag>,
@@ -760,7 +760,7 @@ impl PackageMetadata {
     ///
     /// ```
     /// # use rpm::Package;
-    /// # let package = Package::open("test_assets/389-ds-base-devel-1.3.8.4-15.el7.x86_64.rpm").unwrap();
+    /// # let package = Package::open("tests/assets/RPMS/noarch/rpm-basic-2.3.4-5.el9.noarch.rpm").unwrap();
     /// let offsets = package.metadata.get_package_segment_offsets();
     /// let lead = offsets.lead..offsets.signature_header;
     /// let sig_header = offsets.signature_header..offsets.header;
@@ -896,8 +896,7 @@ impl PackageMetadata {
 
     /// The digest algorithm used per file.
     ///
-    /// Note that this is not necessarily the same as the digest
-    /// used for headers.
+    /// Note that this is not necessarily the same as the digest used for headers.
     pub fn get_file_digest_algorithm(&self) -> Result<DigestAlgorithm, Error> {
         self.header
             .get_entry_data_as_u32(IndexTag::RPMTAG_FILEDIGESTALGO)
@@ -972,6 +971,7 @@ impl PackageMetadata {
             Err(Error::TagNotFound(_)) => Ok(None),
             Err(e) => return Err(e),
         };
+        // TODO: verify this is correct behavior for links?
         let links = self
             .header
             .get_entry_data_as_string_array(IndexTag::RPMTAG_FILELINKTOS);
@@ -981,10 +981,7 @@ impl PackageMetadata {
         {
             Ok(ima_signatures) => Ok(Some(ima_signatures)),
             Err(Error::TagNotFound(_)) => Ok(None),
-            Err(e) => {
-                println!("{e:?}");
-                return Err(e);
-            }
+            Err(e) => return Err(e),
         };
 
         match (

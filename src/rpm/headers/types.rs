@@ -522,7 +522,6 @@ impl<W: std::io::Write> std::io::Write for Sha256Writer<W> {
 }
 
 /// Type-alias for a tuple containing index tags for a scriptlet type,
-///
 pub(crate) type ScriptletIndexTags = (IndexTag, IndexTag, IndexTag);
 
 /// Description of a scriptlet as present in a RPM header record

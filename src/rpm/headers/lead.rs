@@ -10,7 +10,7 @@ use crate::errors::*;
 /// Used to contain valid data, now only a very limited subset is used
 /// and the remaining data is set to fixed values such that compatibility is kept.
 /// Only the "magic number" is still relevant as it is used to detect rpm files.
-#[derive(Eq)]
+#[derive(Clone, Eq)]
 pub struct Lead {
     magic: [u8; 4],
     major: u8,

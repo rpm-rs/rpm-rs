@@ -300,8 +300,9 @@ pub(crate) mod test {
 
     /// Load a pair of sample keys.
     pub(crate) fn load_asc_keys() -> (Vec<u8>, Vec<u8>) {
-        let signing_key = include_bytes!("../../../test_assets/secret_key.asc");
-        let verification_key = include_bytes!("../../../test_assets/public_key.asc");
+        let signing_key = include_bytes!("../../../tests/assets/signing_keys/secret_rsa4096.asc");
+        let verification_key =
+            include_bytes!("../../../tests/assets/signing_keys/public_rsa4096.asc");
         (signing_key.to_vec(), verification_key.to_vec())
     }
 
@@ -438,7 +439,7 @@ pub(crate) mod test {
 
     #[test]
     fn verify_subkeys_match() {
-        // verifies that all subkeys are present in both keys under test_assets
+        // verifies that all subkeys are present in both keys under tests/assets/
         // which assures all other tests are sane
         use std::collections::HashSet;
         let (signer, verifier) = prep();
