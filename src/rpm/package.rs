@@ -1,5 +1,8 @@
+#[cfg(feature = "signature-meta")]
+use std::io::Read;
 use std::{
-    fs, io,
+    fmt, fs,
+    io::{self, Seek},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -7,12 +10,10 @@ use std::{
 use digest::Digest;
 use num_traits::FromPrimitive;
 
+use crate::rpm::skip_reader::SkipReader;
 use crate::{constants::*, errors::*, CompressionType};
-
 #[cfg(feature = "signature-meta")]
 use crate::{signature, Timestamp};
-#[cfg(feature = "signature-meta")]
-use std::{fmt::Debug, io::Read};
 
 use super::headers::*;
 use super::Lead;
@@ -36,53 +37,71 @@ pub struct Digests {
 ///
 /// Can either be created using the [`RPMBuilder`](super::builder::RPMBuilder)
 /// or used with [`parse`](`self::RPMPackage::parse`) to obtain from a file.
-#[derive(Debug)]
-pub struct RPMPackage {
+pub struct RPMPackage<R> {
     /// Header and metadata structures.
     ///
     /// Contains the constant lead as well as the metadata store.
     pub metadata: RPMPackageMetadata,
     /// The compressed or uncompressed files.
-    pub content: Vec<u8>,
+    pub content: R,
 }
 
-impl RPMPackage {
-    /// Open and parse a file at the provided path as an RPM package
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, RPMError> {
-        let rpm_file = fs::File::open(path.as_ref())?;
-        let mut buf_reader = io::BufReader::new(rpm_file);
-        Self::parse(&mut buf_reader)
+#[cfg(feature = "signature-meta")]
+fn stream_len(mut stream: impl Seek) -> io::Result<u64> {
+    let old_pos = stream.stream_position()?;
+    let len = stream.seek(io::SeekFrom::End(0))?;
+
+    // Avoid seeking a third time when we were already at the end of the
+    // stream. The branch is usually way cheaper than a seek operation.
+    if old_pos != len {
+        stream.seek(io::SeekFrom::Start(old_pos))?;
     }
 
+    Ok(len)
+}
+
+impl RPMPackage<()> {
+    /// Open and parse a file at the provided path as an RPM package
+    pub fn open(
+        path: impl AsRef<Path>,
+    ) -> Result<RPMPackage<SkipReader<io::BufReader<fs::File>>>, RPMError> {
+        let rpm_file = fs::File::open(path.as_ref())?;
+        let buf_reader = io::BufReader::new(rpm_file);
+        RPMPackage::parse(buf_reader)
+    }
+}
+
+impl<R: io::BufRead + Seek> RPMPackage<R> {
     /// Parse an RPM package from an existing buffer
-    pub fn parse(input: &mut impl io::BufRead) -> Result<Self, RPMError> {
-        let metadata = RPMPackageMetadata::parse(input)?;
-        let mut content = Vec::new();
-        input.read_to_end(&mut content)?;
+    pub fn parse(mut input: R) -> Result<RPMPackage<SkipReader<R>>, RPMError> {
+        let metadata = RPMPackageMetadata::parse(&mut input)?;
+        let content = SkipReader::new(input)?;
         Ok(RPMPackage { metadata, content })
     }
 
     /// Write the RPM package to a buffer
-    pub fn write(&self, out: &mut impl io::Write) -> Result<(), RPMError> {
+    pub fn write(&mut self, out: &mut impl io::Write) -> Result<(), RPMError> {
         self.metadata.write(out)?;
-        out.write_all(&self.content)?;
+        io::copy(&mut self.content, out)?;
+        self.content.rewind()?;
         Ok(())
     }
 
     /// Write the RPM package to a file
-    pub fn write_file(&self, path: impl AsRef<Path>) -> Result<(), RPMError> {
+    pub fn write_file(&mut self, path: impl AsRef<Path>) -> Result<(), RPMError> {
         self.write(&mut io::BufWriter::new(fs::File::create(path)?))
     }
 
     /// Prepare both header and content digests as used by the `SignatureIndex`.
     pub(crate) fn create_sig_header_digests(
         header: &[u8],
-        payload: &[u8],
+        payload: &mut R,
     ) -> Result<Digests, RPMError> {
         let digest_md5 = {
             let mut hasher = md5::Md5::default();
             hasher.update(header);
-            hasher.update(payload);
+            io::copy(payload, &mut hasher)?;
+            payload.rewind()?;
             let hash_result = hasher.finalize();
             hash_result.to_vec()
         };
@@ -127,7 +146,7 @@ impl RPMPackage {
     pub fn sign_with_timestamp<S>(
         &mut self,
         signer: S,
-        t: impl TryInto<Timestamp, Error = impl Debug>,
+        t: impl TryInto<Timestamp, Error = impl fmt::Debug>,
     ) -> Result<(), RPMError>
     where
         S: signature::Signing<signature::algorithm::RSA, Signature = Vec<u8>>,
@@ -139,17 +158,17 @@ impl RPMPackage {
         // make sure to not hash any previous signatures in the header
         self.metadata.header.write(&mut header_bytes)?;
 
-        let header_and_content_len = header_bytes.len() + self.content.len();
+        let content_len = stream_len(&mut self.content)?;
+        let header_and_content_len = header_bytes.len() as u64 + content_len;
 
         let Digests {
             header_digest_sha256,
             header_digest_sha1,
             header_and_content_digest,
-        } = Self::create_sig_header_digests(header_bytes.as_slice(), &self.content)?;
+        } = Self::create_sig_header_digests(header_bytes.as_slice(), &mut self.content)?;
 
         let rsa_signature_spanning_header_only = signer.sign(header_bytes.as_slice(), t)?;
-        let mut header_and_content_cursor =
-            io::Cursor::new(header_bytes).chain(io::Cursor::new(&self.content));
+        let mut header_and_content_cursor = io::Cursor::new(header_bytes).chain(&mut self.content);
 
         let rsa_signature_spanning_header_and_archive =
             signer.sign(&mut header_and_content_cursor, t)?;
@@ -173,7 +192,7 @@ impl RPMPackage {
 
     /// Verify the signature as present within the RPM package.
     #[cfg(feature = "signature-meta")]
-    pub fn verify_signature<V>(&self, verifier: V) -> Result<(), RPMError>
+    pub fn verify_signature<V>(&mut self, verifier: V) -> Result<(), RPMError>
     where
         V: signature::Verifying<signature::algorithm::RSA, Signature = Vec<u8>>,
     {
@@ -186,6 +205,9 @@ impl RPMPackage {
             .get_entry_data_as_binary(IndexSignatureTag::RPMSIGTAG_RSA)?;
 
         signature::echo_signature("signature_header(header only)", signature_header_only);
+        verifier.verify(header_bytes.as_slice(), signature_header_only)?;
+
+        self.verify_digests()?;
 
         let signature_header_and_content = self
             .metadata
@@ -196,25 +218,21 @@ impl RPMPackage {
             "signature_header(header and content)",
             signature_header_and_content,
         );
-
-        verifier.verify(header_bytes.as_slice(), signature_header_only)?;
-        self.verify_digests()?;
-
-        let header_and_content_cursor =
-            io::Cursor::new(header_bytes).chain(io::Cursor::new(&self.content));
+        let header_and_content_cursor = io::Cursor::new(header_bytes).chain(&mut self.content);
         verifier.verify(header_and_content_cursor, signature_header_and_content)?;
+        self.content.rewind()?;
 
         Ok(())
     }
 
     /// Verify any digests which may be present in the RPM headers
-    pub fn verify_digests(&self) -> Result<(), RPMError> {
+    pub fn verify_digests(&mut self) -> Result<(), RPMError> {
         let mut header = Vec::<u8>::with_capacity(1024);
         // make sure to not hash any previous signatures in the header
         self.metadata.header.write(&mut header)?;
 
         let pkg_actual_digests =
-            Self::create_sig_header_digests(header.as_slice(), self.content.as_slice())?;
+            Self::create_sig_header_digests(header.as_slice(), &mut self.content)?;
 
         let md5 = self
             .metadata
@@ -273,7 +291,8 @@ impl RPMPackage {
                 // At the present moment even rpmbuild only supports sha256
             };
             let payload_digest = {
-                hasher.update(self.content.as_slice());
+                io::copy(&mut self.content, &mut hasher)?;
+                self.content.rewind()?;
                 hex::encode(hasher.finalize())
             };
             if payload_digest != payload_digest_val[0] {
@@ -282,6 +301,14 @@ impl RPMPackage {
         }
 
         Ok(())
+    }
+}
+
+impl<R> fmt::Debug for RPMPackage<R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RPMPackage")
+            .field("metadata", &self.metadata)
+            .finish()
     }
 }
 
@@ -301,12 +328,12 @@ impl RPMPackageMetadata {
     }
 
     /// Parse RPMPackageMetadata from the provided reader
-    pub fn parse(input: &mut impl io::BufRead) -> Result<Self, RPMError> {
+    pub fn parse(mut input: impl io::BufRead) -> Result<Self, RPMError> {
         let mut lead_buffer = [0; LEAD_SIZE as usize];
         input.read_exact(&mut lead_buffer)?;
         let lead = Lead::parse(&lead_buffer)?;
-        let signature_header = Header::parse_signature(input)?;
-        let header = Header::parse(input)?;
+        let signature_header = Header::parse_signature(&mut input)?;
+        let header = Header::parse(&mut input)?;
 
         Ok(RPMPackageMetadata {
             lead,

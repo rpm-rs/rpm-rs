@@ -22,7 +22,7 @@
 //! let raw_secret_key = std::fs::read("./test_assets/secret_key.asc")?;
 //! // It's recommended to use timestamp of last commit in your VCS
 //! let source_date = 1_600_000_000;
-//! let pkg = rpm::RPMBuilder::new("test", "1.0.0", "MIT", "x86_64", "some awesome package")
+//! let mut pkg = rpm::RPMBuilder::new("test", "1.0.0", "MIT", "x86_64", "some awesome package")
 //!     .compression(rpm::CompressionType::Gzip)
 //!     .with_file(
 //!         "./test_assets/awesome.toml",
@@ -67,7 +67,7 @@
 //!
 //! // reading
 //! let raw_pub_key = std::fs::read("test_assets/public_key.asc")?;
-//! let pkg = rpm::RPMPackage::open("/tmp/awesome.rpm")?;
+//! let mut pkg = rpm::RPMPackage::open("/tmp/awesome.rpm")?;
 //! // verifying
 //! pkg.verify_signature(Verifier::load_from_asc_bytes(&raw_pub_key)?)?;
 //! # }

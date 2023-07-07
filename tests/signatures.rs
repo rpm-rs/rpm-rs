@@ -33,7 +33,7 @@ fn parse_externally_signed_rpm_and_verify() -> Result<(), Box<dyn std::error::Er
         let signer = Signer::load_from_asc_bytes(signing_key.as_ref())?;
 
         let mut f = std::fs::File::create(&out_file)?;
-        let pkg = RPMBuilder::new(
+        let mut pkg = RPMBuilder::new(
             "roundtrip",
             "1.0.0",
             "MIT",
@@ -66,7 +66,7 @@ fn parse_externally_signed_rpm_and_verify() -> Result<(), Box<dyn std::error::Er
     {
         let out_file = std::fs::File::open(&out_file).expect("should be able to open rpm file");
         let mut buf_reader = std::io::BufReader::new(out_file);
-        let package = RPMPackage::parse(&mut buf_reader)?;
+        let mut package = RPMPackage::parse(&mut buf_reader)?;
 
         let verifier = Verifier::load_from_asc_bytes(verification_key.as_ref())?;
 

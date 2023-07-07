@@ -328,7 +328,7 @@ impl Header<IndexSignatureTag> {
     /// Please use the [`builder`](Self::builder()) which has modular and safe API.
     #[cfg(feature = "signature-meta")]
     pub(crate) fn new_signature_header(
-        headers_plus_payload_size: usize,
+        headers_plus_payload_size: u64,
         md5sum: &[u8],
         sha1: &str,
         sha256: &str,
@@ -956,7 +956,7 @@ mod test {
         };
 
         let built = Header::<IndexSignatureTag>::new_signature_header(
-            size as usize,
+            size as u64,
             md5sum,
             sha1,
             sha256,

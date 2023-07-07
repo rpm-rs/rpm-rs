@@ -56,7 +56,7 @@ where
     T: ConstructionStage,
 {
     /// Construct the complete signature header.
-    pub fn build(mut self, headers_plus_payload_size: usize) -> Header<IndexSignatureTag> {
+    pub fn build(mut self, headers_plus_payload_size: u64) -> Header<IndexSignatureTag> {
         let entry = match headers_plus_payload_size.try_into() {
             Ok(size) => IndexEntry::new(
                 IndexSignatureTag::RPMSIGTAG_SIZE,
@@ -66,7 +66,7 @@ where
             Err(_) => IndexEntry::new(
                 IndexSignatureTag::RPMSIGTAG_LONGSIZE,
                 0i32,
-                IndexData::Int64(vec![headers_plus_payload_size as u64]),
+                IndexData::Int64(vec![headers_plus_payload_size]),
             ),
         };
         self.entries.insert(0, entry);

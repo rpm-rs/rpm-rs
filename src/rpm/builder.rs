@@ -2,9 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 
 use std::fs;
-#[cfg(feature = "signature-meta")]
-use std::io;
-use std::io::{Read, Write};
+use std::io::{self, Read, Seek, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -461,21 +459,23 @@ impl RPMBuilder {
     /// build without a signature
     ///
     /// ignores a present key, if any
-    pub fn build(self) -> Result<RPMPackage, RPMError> {
+    pub fn build(self) -> Result<RPMPackage<io::Cursor<Vec<u8>>>, RPMError> {
         let (lead, header_idx_tag, content) = self.prepare_data()?;
 
+        let mut content = io::Cursor::new(content);
         let mut header = Vec::with_capacity(128);
         header_idx_tag.write(&mut header)?;
 
         let digest_header = {
             let header = header;
-            let header_and_content_len = header.len() + content.len();
+            let header_and_content_len = header.len() as u64 + content.get_ref().len() as u64;
 
             let Digests {
                 header_and_content_digest: header_and_content_digest_md5,
                 header_digest_sha1,
                 header_digest_sha256,
-            } = RPMPackage::create_sig_header_digests(header.as_slice(), content.as_slice())?;
+            } = RPMPackage::create_sig_header_digests(header.as_slice(), &mut content)?;
+            content.rewind()?;
 
             Header::<IndexSignatureTag>::builder()
                 .add_digest(
@@ -499,24 +499,26 @@ impl RPMBuilder {
     ///
     /// See `signature::Signing` for more details.
     #[cfg(feature = "signature-meta")]
-    pub fn build_and_sign<S>(self, signer: S) -> Result<RPMPackage, RPMError>
+    pub fn build_and_sign<S>(self, signer: S) -> Result<RPMPackage<io::Cursor<Vec<u8>>>, RPMError>
     where
         S: signature::Signing<signature::algorithm::RSA>,
     {
         let source_date = self.source_date;
         let (lead, header_idx_tag, content) = self.prepare_data()?;
 
+        let mut content = io::Cursor::new(content);
         let mut header = Vec::with_capacity(128);
         header_idx_tag.write(&mut header)?;
         let header = header;
 
-        let header_and_content_len = header.len() + content.len();
+        let header_and_content_len = header.len() as u64 + content.get_ref().len() as u64;
 
         let Digests {
             header_and_content_digest: header_and_content_digest_md5,
             header_digest_sha1,
             header_digest_sha256,
-        } = RPMPackage::create_sig_header_digests(header.as_slice(), content.as_slice())?;
+        } = RPMPackage::create_sig_header_digests(header.as_slice(), &mut content)?;
+        content.rewind()?;
 
         let builder = Header::<IndexSignatureTag>::builder().add_digest(
             header_digest_sha1.as_str(),
@@ -532,8 +534,9 @@ impl RPMBuilder {
             };
             let rsa_sig_header_only = signer.sign(header.as_slice(), t)?;
 
-            let cursor = io::Cursor::new(header).chain(io::Cursor::new(&content));
+            let cursor = io::Cursor::new(header).chain(&mut content);
             let rsa_sig_header_and_archive = signer.sign(cursor, t)?;
+            content.rewind()?;
 
             builder
                 .add_signature(

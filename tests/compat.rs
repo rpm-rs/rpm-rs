@@ -1,16 +1,17 @@
-use rpm::*;
-use std::fs::File;
+use std::fs;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::process::Stdio;
 
-mod common;
-
+use rpm::*;
 use signature::{self, Verifying};
 
+mod common;
+
 mod pgp {
-    use super::*;
     use signature::pgp::{Signer, Verifier};
+
+    use super::*;
 
     #[serial_test::serial]
     fn create_full_rpm() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,8 +24,8 @@ mod pgp {
         let cargo_file = common::cargo_manifest_dir().join("Cargo.toml");
         let out_file = common::cargo_out_dir().join("test.rpm");
 
-        let mut f = File::create(out_file)?;
-        let pkg = RPMBuilder::new("test", "1.0.0", "MIT", "x86_64", "some package")
+        let mut f = fs::File::create(out_file)?;
+        let mut pkg = RPMBuilder::new("test", "1.0.0", "MIT", "x86_64", "some package")
             .compression(CompressionType::Gzip)
             .with_file(
                 cargo_file.to_str().unwrap(),
@@ -98,10 +99,11 @@ mod pgp {
     #[test]
     #[serial_test::serial]
     fn create_empty_rpm() -> Result<(), Box<dyn std::error::Error>> {
-        let pkg = RPMBuilder::new("foo", "1.0.0", "MIT", "x86_64", "an empty package").build()?;
+        let mut pkg =
+            RPMBuilder::new("foo", "1.0.0", "MIT", "x86_64", "an empty package").build()?;
         let out_file = common::cargo_out_dir().join("test.rpm");
 
-        let mut f = std::fs::File::create(out_file)?;
+        let mut f = fs::File::create(out_file)?;
         pkg.write(&mut f)?;
         let dnf_cmd = "dnf --disablerepo=updates,updates-testing,updates-modular,fedora-modular install -y /out/test.rpm;";
 
@@ -130,8 +132,8 @@ mod pgp {
         let cargo_file = common::cargo_manifest_dir().join("Cargo.toml");
         let out_file = common::cargo_out_dir().join("test.rpm");
 
-        let mut f = std::fs::File::create(out_file)?;
-        let pkg = RPMBuilder::new("test", "1.0.0", "MIT", "x86_64", "some package")
+        let mut f = fs::File::create(out_file)?;
+        let mut pkg = RPMBuilder::new("test", "1.0.0", "MIT", "x86_64", "some package")
             .compression(CompressionType::Gzip)
             .with_file(
                 cargo_file.to_str().unwrap(),
@@ -205,8 +207,8 @@ mod pgp {
         {
             let signer = Signer::load_from_asc_bytes(signing_key.as_ref())?;
 
-            let mut f = std::fs::File::create(&out_file)?;
-            let pkg = RPMBuilder::new(
+            let mut f = fs::File::create(&out_file)?;
+            let mut pkg = RPMBuilder::new(
                 "roundtrip",
                 "1.0.0",
                 "MIT",
@@ -237,9 +239,9 @@ mod pgp {
 
         // verify
         {
-            let out_file = std::fs::File::open(&out_file).expect("should be able to open rpm file");
+            let out_file = fs::File::open(&out_file).expect("should be able to open rpm file");
             let mut buf_reader = std::io::BufReader::new(out_file);
-            let package = RPMPackage::parse(&mut buf_reader)?;
+            let mut package = RPMPackage::parse(&mut buf_reader)?;
 
             let verifier = Verifier::load_from_asc_bytes(verification_key.as_ref())?;
 
@@ -262,7 +264,7 @@ mod pgp {
             common::cargo_out_dir().join(rpm_file_path.file_name().unwrap().to_str().unwrap());
 
         println!("cpy {} -> {}", rpm_file_path.display(), out_file.display());
-        std::fs::copy(rpm_file_path.as_path(), out_file.as_path()).expect("Must be able to copy");
+        fs::copy(rpm_file_path.as_path(), out_file.as_path()).expect("Must be able to copy");
 
         // avoid any further usage
         drop(rpm_file_path);
@@ -280,9 +282,9 @@ rpm -vv --checksig /out/{rpm_file} 2>&1
 
         podman_container_launcher(cmd.as_str(), "fedora:38", vec![])?;
 
-        let out_file = std::fs::File::open(&out_file).expect("should be able to open rpm file");
-        let mut buf_reader = std::io::BufReader::new(out_file);
-        let package = RPMPackage::parse(&mut buf_reader)?;
+        let out_file = fs::File::open(&out_file).expect("should be able to open rpm file");
+        let mut buf_reader = BufReader::new(out_file);
+        let mut package = RPMPackage::parse(&mut buf_reader)?;
 
         package.verify_signature(verifier)?;
 
@@ -298,8 +300,8 @@ rpm -vv --checksig /out/{rpm_file} 2>&1
         let test_file = common::cargo_out_dir().join("test.file");
         let test_file_sig = common::cargo_out_dir().join("test.file.sig");
 
-        std::fs::write(&test_file, "test").expect("Must be able to write");
-        let _ = std::fs::remove_file(&test_file_sig);
+        fs::write(&test_file, "test").expect("Must be able to write");
+        let _ = fs::remove_file(&test_file_sig);
 
         let cmd= r#"
 echo "test" > /out/test.file
@@ -334,8 +336,8 @@ gpg --verify /out/test.file.sig /out/test.file 2>&1
         let verifier =
             Verifier::load_from_asc_bytes(verification_key.as_slice()).expect("Must load");
 
-        let raw_sig = std::fs::read(&test_file_sig).expect("must load signature");
-        let data = std::fs::read(&test_file).expect("must load file");
+        let raw_sig = fs::read(&test_file_sig).expect("must load signature");
+        let data = fs::read(&test_file).expect("must load file");
         verifier.verify(data.as_slice(), raw_sig.as_slice())?;
 
         Ok(())
@@ -388,7 +390,7 @@ fn podman_container_launcher(
 ) -> std::io::Result<()> {
     // always mount assets and out directory into container
     let var_cache = common::cargo_manifest_dir().join("dnf-cache");
-    let _ = std::fs::create_dir(var_cache.as_path());
+    let _ = fs::create_dir(var_cache.as_path());
     let var_cache = format!("{}:/var/cache/dnf:z", var_cache.display());
     let out = format!("{}:/out:z", common::cargo_out_dir().display());
     let assets = format!(
