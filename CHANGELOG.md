@@ -79,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Dependency::config()`, `Dependency::user()`, `Dependency::group()`
 - `PackageBuilder::verify_script()`
 - `PackageBuilder::group()` and `PackageBuilder::packager()`
+- `PackageBuilder::with_file_contents()`
 - Added support for the automatic user/group creation feature in rpm 4.19
 
 ### Changed
