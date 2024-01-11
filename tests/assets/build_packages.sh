@@ -14,7 +14,7 @@ rm -r ./BUILD/
 
 # Add signatures
 RSA_KEY_OPTS=( --define "_gpg_name rpm-signing-key-rsa4096" )
-EDDSA_KEY_OPTS=( --define "_gpg_name rpm-signing-key-rsa4096" )
+EDDSA_KEY_OPTS=( --define "_gpg_name rpm-signing-key-ed25519" )
 IMA_SIGNING_OPTS=( --signfiles --fskpath signing_keys/ima_signing.pem --define "_file_signing_key_password i_am_a_ima_signing_password" )
 
 BASIC_RPM="RPMS/noarch/rpm-basic-2.3.4-5.el9.noarch.rpm"

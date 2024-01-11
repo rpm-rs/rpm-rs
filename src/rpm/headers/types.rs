@@ -53,7 +53,50 @@ pub const REGULAR_FILE_TYPE: u16 = 0o100000; //  bit representation = "100000000
 pub const DIR_FILE_TYPE: u16 = 0o040000; //      bit representation = "0100000000000000"
 pub const SYMBOLIC_LINK_FILE_TYPE: u16 = 0o120000; // bit representation = "1010000000000000"
 
-// @todo: <https://github.com/rpm-rs/rpm/issues/52>
+use bitflags::bitflags;
+
+// typedef enum rpmFileTypes_e {
+//     	=  1,	/*!< pipe/fifo */
+//     CDEV	=  2,	/*!< character device */
+//     XDIR	=  4,	/*!< directory */
+//     BDEV	=  6,	/*!< block device */
+//     REG		=  8,	/*!< regular file */
+//     LINK	= 10,	/*!< hard link */
+//     SOCK	= 12	/*!< socket */
+// } rpmFileTypes;
+
+bitflags! {
+    #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+    pub struct FileModeFlags: u16 {
+        const PERMISSIONS_BIT_MASK =    0b0000111111111111; // 0o007777
+
+        const SUID_BIT_MASK =           0b0000100000000000; // 0o007777
+        const SGID_BIT_MASK =           0b0000010000000000; // 0o007777
+        const STICKY_BIT_MASK =         0b0000001000000000; // 0o007777
+
+        const USER_PERM_BIT_MASK =      0b0000000111000000; // 0o007777
+        const GROUP_PERM_BIT_MASK =     0b0000000000111000; // 0o007777
+        const OTHER_PERM_BIT_MASK =     0b0000000000000111;
+
+// The set-user-ID bit (setuid bit).
+
+//     On execution, set the process’s effective user ID to that of the file. For directories on a few systems, give files created in the directory the same owner as the directory, no matter who creates them, and set the set-user-ID bit of newly-created subdirectories.
+// The set-group-ID bit (setgid bit).
+
+//     On execution, set the process’s effective group ID to that of the file. For directories on most systems, give files created in the directory the same group as the directory, no matter what group the user who creates them is in, and set the set-group-ID bit of newly-created subdirectories.
+// The restricted deletion flag or sticky bit.
+
+//     Prevent unprivileged users from removing or renaming a file in a directory unless they own the file or the directory; this is commonly found on world-writable directories like /tmp. For regular files on some older systems, save the program’s text image on the swap device so it will load more quickly when run, so that the image is “sticky”.
+
+        const FILE_TYPE_BIT_MASK =      0b1111000000000000; // 0o170000
+        const REGULAR_FILE_TYPE =       0b1000000000000000; // 0o100000
+        const DIR_FILE_TYPE =           0b0100000000000000; // 0o040000
+        const SYMBOLIC_LINK_FILE_TYPE = 0b1010000000000000; // 0o120000
+    }
+}
+
+
+
 impl From<u16> for FileMode {
     fn from(raw_mode: u16) -> Self {
         // example

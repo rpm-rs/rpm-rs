@@ -15,6 +15,10 @@ fn test_empty_package_equivalent() -> Result<(), Box<dyn std::error::Error>> {
         .compression(CompressionType::None)
         .build()?;
 
+    // Current issues:
+    // ===============
+    // Lead: archnum is set to zero
+
     // @TODO: currently failing due to missing tags, different checksums, offsets etc.
     // empty_rpm.canonicalize()?;
     // built_empty_rpm.canonicalize()?;
@@ -36,6 +40,240 @@ fn test_empty_package_equivalent() -> Result<(), Box<dyn std::error::Error>> {
 fn test_empty_source_package_equivalent() -> Result<(), Box<dyn std::error::Error>> {
     let empty_rpm = Package::open(common::rpm_empty_source_path())?;
     let built_empty_rpm = PackageBuilder::new("rpm-empty", "0", "LGPL", "x86-64", "").build()?;
+
+    // @TODO: currently failing due to missing tags, different checksums, offsets etc.
+    // empty_rpm.canonicalize()?;
+    // built_empty_rpm.canonicalize()?;
+    // pretty_assertions::assert_eq!(empty_rpm.metadata, built_empty_rpm.metadata);
+
+    // Test that the payload generated is equivalent
+    pretty_assertions::assert_str_eq!(
+        format!("{:?}", &empty_rpm.content.as_bstr()),
+        format!("{:?}", &built_empty_rpm.content.as_bstr()),
+    );
+
+    Ok(())
+}
+
+/// Build a basic package and compare it to one built by rpmbuild (using rpm-basic.spec)
+#[ignore]
+#[test]
+fn test_basic_package_equivalent() -> Result<(), Box<dyn std::error::Error>> {
+    let original_rpm = Package::open(common::rpm_basic_pkg_path())?;
+    let built_rpm = PackageBuilder::new(
+        "rpm-basic",
+        "2.3.4",
+        "MPL-2.0",
+        "noarch",
+        "A package for exercising basic features of RPM",
+    )
+    .epoch(1)
+    .release("5")
+    .description("This package attempts to exercise basic features of RPM packages.")
+    .vendor("Los Pollos Hermanos")
+    .url("http://www.savewalterwhite.com/")
+    .vcs("https://github.com/rpm-rs/rpm")
+    .group("Development/Tools")
+    .packager("Walter White")
+    .compression(CompressionType::None)
+    .build_host("localhost")
+    .source_date(1681068559)
+    .provides(Dependency::any("/usr/bin/ls"))
+    .provides(Dependency::any("aaronpaul"))
+    .provides(Dependency::any("breaking(bad)"))
+    .provides(Dependency::config("rpm-basic", "1:2.3.4-5.el9"))
+    .provides(Dependency::eq("rpm-basic", "1:2.3.4-5.el9"))
+    .provides(Dependency::eq("shock", "33"))
+    .requires(Dependency::script_pre("/usr/sbin/ego"))
+    .requires(Dependency::config("rpm-basic", "1:2.3.4-5.el9"))
+    .requires(Dependency::greater_eq("methylamine", "1.0.0-1"))
+    .requires(Dependency::less_eq("morality", "2"))
+    .requires(Dependency::script_post("regret"))
+    .conflicts(Dependency::greater("hank", "35"))
+    .obsoletes(Dependency::less("gusfring", "32.1-0"))
+    .obsoletes(Dependency::less("tucosalamanca", "444"))
+    .supplements(Dependency::eq("comedy", "0:11.1-4"))
+    .suggests(Dependency::any("chilipowder"))
+    .enhances(Dependency::greater("purity", "9000"))
+    .recommends(Dependency::any("SaulGoodman(CriminalLawyer)"))
+    .recommends(Dependency::greater("huel", "9:11.0-0"))
+    .with_file(
+        "./tests/assets/SOURCES/example_config.toml",
+        FileOptions::new("/etc/rpm-basic/example_config.toml").is_config(),
+    )?
+    .with_file(
+        "./tests/assets/SOURCES/multiplication_tables.py",
+        FileOptions::new("/usr/bin/rpm-basic"),
+    )?
+    .with_file(
+        "",
+        FileOptions::new("/usr/lib/rpm-basic").mode(FileMode::Dir { permissions: 0o644 }),
+    )?
+    .with_file(
+        "",
+        FileOptions::new("/usr/lib/rpm-basic/module").mode(FileMode::Dir { permissions: 0o755 }),
+    )?
+    .with_file(
+        "./tests/assets/SOURCES/module/__init__.py",
+        FileOptions::new("/usr/lib/rpm-basic/module/__init__.py"),
+    )?
+    .with_file(
+        "./tests/assets/SOURCES/module/hello.py",
+        FileOptions::new("/usr/lib/rpm-basic/module/hello.py"),
+    )?
+    .with_file(
+        "",
+        FileOptions::new("/usr/lib/rpm-basic/module").mode(FileMode::Dir { permissions: 0o755 }),
+    )?
+    .with_file(
+        "",
+        FileOptions::new("/usr/share/doc/rpm-basic").mode(FileMode::Regular { permissions: 0o644 }),
+    )?
+    .with_file(
+        "",
+        FileOptions::new("/usr/share/doc/rpm-basic/README").is_doc(),
+    )?
+    .with_file(
+        "./tests/assets/SOURCES/example_data.xml",
+        FileOptions::new("/usr/share/rpm-basic/example_data.xml"),
+    )?
+    .with_file(
+        "",
+        FileOptions::new("/var/log/rpm-basic/basic.log").is_ghost(),
+    )?
+    .with_file(
+        "",
+        FileOptions::new("/var/tmp/rpm-basic").mode(FileMode::Dir { permissions: 0o755 }),
+    )?
+    .add_changelog_entry(
+        "Walter White <ww@savewalterwhite.com> - 3.3.3-3",
+        "- I'm not in the meth business. I'm in the empire business.",
+        1623672000,
+    )
+    .add_changelog_entry(
+        "Gustavo Fring <gus@lospolloshermanos.com> - 2.2.2-2",
+        "- Never Make The Same Mistake Twice.",
+        1619352000,
+    )
+    .add_changelog_entry(
+        "Mike Ehrmantraut <mike@lospolloshermanos.com> - 1.1.1-1",
+        "- Just because you shot Jesse James, don't make you Jesse James.",
+        1619352000,
+    )
+    .build()?;
+
+    // @TODO: currently failing due to missing tags, different checksums, offsets etc.
+    // empty_rpm.canonicalize()?;
+    // built_empty_rpm.canonicalize()?;
+    // pretty_assertions::assert_eq!(empty_rpm.metadata, built_empty_rpm.metadata);
+
+    // Test that the payload generated is equivalent
+    pretty_assertions::assert_str_eq!(
+        format!("{:?}", &original_rpm.content.as_bstr()),
+        format!("{:?}", &built_rpm.content.as_bstr()),
+    );
+
+    Ok(())
+}
+
+/// Build a package with all different kinds of file attrs and compare it to one built by rpmbuild (using rpm-file-attrs.spec)
+#[ignore]
+#[test]
+fn test_file_attrs_package_equivalent() -> Result<(), Box<dyn std::error::Error>> {
+    let empty_rpm = Package::open(common::rpm_empty_path())?;
+    let built_empty_rpm = PackageBuilder::new(
+        "rpm-file-attrs",
+        "1.0",
+        "MIT",
+        "noarch",
+        "Test RPM file attributes",
+    )
+    .release("1")
+    .description("Test RPM file attributes")
+    .compression(CompressionType::None)
+    .build_host("localhost")
+    .source_date(1681068559)
+    .with_file(
+        "",
+        FileOptions::new("/opt/rpm-file-attrs").mode(FileMode::Dir { permissions: 0o755 }),
+    )?
+    .with_file_contents(
+        "artifact",
+        FileOptions::new("/opt/rpm-file-attrs/artifact").is_artifact(),
+    )?
+    .with_file_contents(
+        "config",
+        FileOptions::new("/opt/rpm-file-attrs/config").is_config(),
+    )?
+    .with_file_contents(
+        "config_noreplace",
+        FileOptions::new("/opt/rpm-file-attrs/config_noreplace").is_config_noreplace(),
+    )?
+    .with_file_contents(
+        "different-owner-and-group",
+        FileOptions::new("/opt/rpm-file-attrs/different-owner-and-group")
+            .user("jane")
+            .group("bob")
+            .mode(FileMode::Regular { permissions: 0o655 }),
+    )?
+    .with_file(
+        "",
+        FileOptions::new("/opt/rpm-file-attrs/dir").mode(FileMode::Dir { permissions: 0o755 }),
+    )?
+    .with_file_contents("normal", FileOptions::new("/opt/rpm-file-attrs/dir/normal"))?
+    .with_file_contents("doc", FileOptions::new("/opt/rpm-file-attrs/doc").is_doc())?
+    .with_file_contents(
+        "empty_caps",
+        FileOptions::new("/opt/rpm-file-attrs/empty_caps").caps("=")?,
+    )?
+    .with_file_contents(
+        "empty_caps2",
+        FileOptions::new("/opt/rpm-file-attrs/empty_caps2").caps("")?,
+    )?
+    .with_file_contents(
+        "example-binary",
+        FileOptions::new("/opt/rpm-file-attrs/example-binary")
+            .mode(FileMode::Regular { permissions: 0o644 }),
+    )?
+    .with_file_contents(
+        "example-confidential-file",
+        FileOptions::new("/opt/rpm-file-attrs/example-confidential-file")
+            .mode(FileMode::Regular { permissions: 0o600 }),
+    )?
+    .with_file_contents("ghost", FileOptions::new("/opt/rpm-file-attrs/ghost").is_ghost())?
+    .with_file_contents(
+        "license",
+        FileOptions::new("/opt/rpm-file-attrs/license").is_license(),
+    )?
+    .with_file_contents(
+        "missingok",
+        FileOptions::new("/opt/rpm-file-attrs/missingok").is_missingok(),
+    )?
+    .with_file("normal", FileOptions::new("/opt/rpm-file-attrs/normal"))?
+    .with_file(
+        "readme",
+        FileOptions::new("/opt/rpm-file-attrs/readme").is_readme(),
+    )?
+    .with_file(
+        "",
+        FileOptions::new("/opt/rpm-file-attrs/symlink")
+            .symlink("normal")
+            .mode(FileMode::SymbolicLink { permissions: 0o777 }),
+    )?
+    .with_file(
+        "",
+        FileOptions::new("/opt/rpm-file-attrs/symlink_dir")
+            .mode(FileMode::Dir { permissions: 0o755 }),
+    )?
+    .with_file("", FileOptions::new("/opt/rpm-file-attrs/symlink_dir/dir"))?
+    .with_file_contents(
+        "with_caps",
+        FileOptions::new("/opt/rpm-file-attrs/with_caps")
+            .symlink("../dir")
+            .mode(FileMode::Dir { permissions: 0o755 })
+            .caps("cap_sys_ptrace,cap_sys_admin=ep")?,
+    )?
+    .build()?;
 
     // @TODO: currently failing due to missing tags, different checksums, offsets etc.
     // empty_rpm.canonicalize()?;
