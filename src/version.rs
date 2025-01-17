@@ -127,19 +127,19 @@ impl<'a> Nevra<'a> {
     }
 }
 
-impl<'a> fmt::Display for Nevra<'a> {
+impl fmt::Display for Nevra<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}-{}.{}", self.name, self.evr, self.arch)
     }
 }
 
-impl<'a> PartialOrd for Nevra<'a> {
+impl PartialOrd for Nevra<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<'a> Ord for Nevra<'a> {
+impl Ord for Nevra<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         let name_cmp = compare_version_string(&self.name, &other.name);
         if name_cmp != Ordering::Equal {
@@ -248,7 +248,7 @@ impl<'a> From<(&'a str, &'a str, &'a str)> for Evr<'a> {
     }
 }
 
-impl<'a> PartialEq for Evr<'a> {
+impl PartialEq for Evr<'_> {
     fn eq(&self, other: &Self) -> bool {
         ((self.epoch == other.epoch)
             || (self.epoch == "" && other.epoch == "0")
@@ -258,7 +258,7 @@ impl<'a> PartialEq for Evr<'a> {
     }
 }
 
-impl<'a> fmt::Display for Evr<'a> {
+impl fmt::Display for Evr<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !self.epoch.is_empty() {
             write!(f, "{}:", self.epoch)?;
@@ -268,13 +268,13 @@ impl<'a> fmt::Display for Evr<'a> {
     }
 }
 
-impl<'a> PartialOrd for Evr<'a> {
+impl PartialOrd for Evr<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<'a> Ord for Evr<'a> {
+impl Ord for Evr<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         let epoch_1 = if self.epoch.is_empty() {
             "0"

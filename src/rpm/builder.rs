@@ -286,7 +286,6 @@ impl PackageBuilder {
     ///
     /// The a changelog entry consists of an entry name (which includes author, email followed by
     /// a dash followed by a version number), description, and the date and time of the change.
-
     /// ```
     /// # #[cfg(feature = "chrono")]
     /// # || -> Result<(), Box<dyn std::error::Error>> {

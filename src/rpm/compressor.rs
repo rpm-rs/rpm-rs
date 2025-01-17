@@ -218,7 +218,7 @@ pub(crate) fn decompress_stream(
         #[cfg(feature = "xz-compression")]
         CompressionType::Xz => Ok(Box::new(xz2::bufread::XzDecoder::new(reader))),
         #[cfg(feature = "bzip2-compression")]
-        CompressionType::Bzip2 => Ok(Box::new(bzip2::read::BzipDecoder::new(reader))),
+        CompressionType::Bzip2 => Ok(Box::new(bzip2::bufread::BzDecoder::new(reader))),
         // This is an issue when building with all compression types enabled
         #[allow(unreachable_patterns)]
         _ => Err(Error::UnsupportedCompressorType(value.to_string())),
