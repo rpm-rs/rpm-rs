@@ -22,22 +22,22 @@
 //! # let _ = env_logger::Builder::new().filter_level(log::LevelFilter::Trace).is_test(true).try_init();
 //! # #[cfg(feature = "signature-pgp")]
 //! # {
-//! let raw_secret_key = std::fs::read("./test_assets/secret_key.asc")?;
+//! let raw_secret_key = std::fs::read("./tests/assets/signing_keys/secret_rsa4096.asc")?;
 //! // It's recommended to use timestamp of last commit in your VCS
 //! let source_date = 1_600_000_000;
 //! let pkg = rpm::PackageBuilder::new("test", "1.0.0", "MIT", "x86_64", "some awesome package")
 //!     .compression(rpm::CompressionType::Gzip)
 //!     .with_file(
-//!         "./test_assets/awesome.toml",
+//!         "./tests/assets/SOURCES/example_config.toml",
 //!         rpm::FileOptions::new("/etc/awesome/config.toml").is_config(),
 //!     )?
 //!     // file mode is inherited from source file
 //!     .with_file(
-//!         "./test_assets/awesome.py",
+//!         "./tests/assets/SOURCES/multiplication_tables.py",
 //!         rpm::FileOptions::new("/usr/bin/awesome"),
 //!     )?
 //!     .with_file(
-//!         "./test_assets/awesome.toml",
+//!         "./tests/assets/SOURCES/example_config.toml",
 //!         // you can set a custom mode and custom user too
 //!         rpm::FileOptions::new("/etc/awesome/second.toml")
 //!             .mode(rpm::FileMode::regular(0o644))
@@ -69,7 +69,7 @@
 //! pkg.write(&mut f)?;
 //!
 //! // reading
-//! let raw_pub_key = std::fs::read("test_assets/public_key.asc")?;
+//! let raw_pub_key = std::fs::read("tests/assets/signing_keys/public_rsa4096.asc")?;
 //! let pkg = rpm::Package::open("/tmp/awesome.rpm")?;
 //! // verifying
 //! pkg.verify_signature(Verifier::load_from_asc_bytes(&raw_pub_key)?)?;
@@ -91,6 +91,3 @@ pub use crate::version::*;
 
 mod rpm;
 pub use crate::rpm::*;
-
-#[cfg(test)]
-mod tests;

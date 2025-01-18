@@ -4,8 +4,6 @@ License:        LGPL
 Release:        0
 Summary:        ""
 
-#BuildRequires: 
-
 %description
 
 %build

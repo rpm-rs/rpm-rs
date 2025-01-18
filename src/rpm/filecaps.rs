@@ -50,6 +50,14 @@ const CAPS: &[&str; 41] = &[
 #[derive(Debug, Clone)]
 pub struct FileCaps(String);
 
+impl FileCaps {
+    pub fn new(input: String) -> Result<Self, Error> {
+        validate_caps_text(&input)?;
+
+        Ok(Self(input))
+    }
+}
+
 impl Display for FileCaps {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

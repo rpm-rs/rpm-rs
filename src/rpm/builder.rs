@@ -286,7 +286,6 @@ impl PackageBuilder {
     ///
     /// The a changelog entry consists of an entry name (which includes author, email followed by
     /// a dash followed by a version number), description, and the date and time of the change.
-
     /// ```
     /// # #[cfg(feature = "chrono")]
     /// # || -> Result<(), Box<dyn std::error::Error>> {
@@ -359,6 +358,40 @@ impl PackageBuilder {
         let modified_at = input.metadata()?.modified()?.try_into()?;
 
         self.add_data(content, modified_at, options)?;
+        Ok(self)
+    }
+
+    /// Add a file to the package without needing an existing file.
+    ///
+    /// Helpful if files are being generated on-demand, and you don't want to write them to disk.
+    ///
+    /// ```
+    /// # fn foo() -> Result<(), Box<dyn std::error::Error>> {
+    ///
+    /// let pkg = rpm::PackageBuilder::new("foo", "1.0.0", "Apache-2.0", "x86_64", "some baz package")
+    ///     .with_file_contents(
+    ///         "
+    /// [check]
+    /// date = true
+    /// time = true
+    /// ",
+    ///         rpm::FileOptions::new("/etc/awesome/config.toml").is_config(),
+    ///     )?
+    ///      .with_file_contents(
+    ///         "./awesome-config.toml",
+    ///         // you can set a custom mode, capabilities and custom user too
+    ///         rpm::FileOptions::new("/etc/awesome/second.toml").mode(0o100744).caps("cap_sys_admin=pe")?.user("hugo"),
+    ///     )?
+    ///     .build()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_file_contents(
+        mut self,
+        content: impl Into<Vec<u8>>,
+        options: impl Into<FileOptions>,
+    ) -> Result<Self, Error> {
+        self.add_data(content.into(), Timestamp::now(), options.into())?;
         Ok(self)
     }
 

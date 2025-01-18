@@ -562,7 +562,7 @@ bitflags! {
         const DONOTUSE = 1 << 2;  // %%donotuse
         const MISSINGOK = 1 << 3;  // %%config(missingok)
         const NOREPLACE = 1 << 4;  // %%config(noreplace)
-        // const SPECFILE = 1 << 5;  // first file in SRPM?
+        const SPECFILE = 1 << 5; // specfile, which is the first file in a source RPM
         const GHOST = 1 << 6;  // %%ghost
         const LICENSE = 1 << 7;  // %%license
         const README = 1 << 8;  // %%readme

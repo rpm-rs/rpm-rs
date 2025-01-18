@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added support for ecdsa signatures
+- Added `Package::files()` for iterating over the files of an RPM package (metadata & contents).
+- Added `Package::extract()` for extracting the archive contents of an RPM package to a directory on disk
 
 ## 0.16.0
 
@@ -77,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Dependency::config()`, `Dependency::user()`, `Dependency::group()`
 - `PackageBuilder::verify_script()`
 - `PackageBuilder::group()` and `PackageBuilder::packager()`
+- `PackageBuilder::with_file_contents()`
 - Added support for the automatic user/group creation feature in rpm 4.19
 
 ### Changed

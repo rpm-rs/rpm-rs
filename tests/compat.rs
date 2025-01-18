@@ -6,7 +6,7 @@ use std::process::Stdio;
 
 mod common;
 
-use signature::{self, Verifying};
+use signature;
 
 #[cfg(target_os = "linux")]
 mod pgp {
@@ -70,7 +70,7 @@ mod pgp {
                 FileOptions::new("/etc/Cargo.toml"),
             )?
             .with_file(
-                "./test_assets/empty_file_for_symlink_create",
+                "./tests/assets/SOURCES/empty_file_for_symlink_create",
                 FileOptions::new("/usr/bin/awesome_link")
                     .mode(0o120644)
                     .symlink("/usr/bin/awesome"),
@@ -127,7 +127,7 @@ mod pgp {
     #[serial_test::serial]
     fn test_install_full_rpm_with_signature() -> Result<(), Box<dyn std::error::Error>> {
         let _ = env_logger::try_init();
-        let (signing_key, _) = common::load_asc_keys();
+        let (signing_key, _) = common::load_rsa_keys();
 
         let signer = Signer::load_from_asc_bytes(signing_key.as_ref())
             .expect("Must load signer from signing key");
@@ -166,7 +166,7 @@ mod pgp {
     #[serial_test::serial]
     fn test_install_empty_rpm_with_signature() -> Result<(), Box<dyn std::error::Error>> {
         let _ = env_logger::try_init();
-        let (signing_key, _) = common::load_asc_keys();
+        let (signing_key, _) = common::load_rsa_keys();
 
         let signer = Signer::load_from_asc_bytes(signing_key.as_ref())
             .expect("Must load signer from signing key");
@@ -186,11 +186,11 @@ mod pgp {
     #[serial_test::serial]
     fn test_verify_externally_signed_rpm() -> Result<(), Box<dyn std::error::Error>> {
         let _ = env_logger::try_init();
-        let (_, verification_key) = common::load_asc_keys();
+        let (_, verification_key) = common::load_rsa_keys();
 
         let verifier = Verifier::load_from_asc_bytes(verification_key.as_ref())?;
 
-        let rpm_file_path = common::rpm_389_ds_file_path();
+        let rpm_file_path = common::rpm_basic_pkg_path();
         let out_file =
             common::cargo_out_dir().join(rpm_file_path.file_name().unwrap().to_str().unwrap());
 
@@ -203,7 +203,7 @@ mod pgp {
         let cmd = format!(
             r#"
 echo ">>> sign"
-rpm -vv --addsign /out/{rpm_file} 2>&1
+rpmsign -vv --addsign --key-id 849998A2A3F9AE91F2A91696AAC6E3F545417F99 /out/{rpm_file} 2>&1
 
 echo ">>> verify signature with rpm"
 rpm -vv --checksig /out/{rpm_file} 2>&1
@@ -213,63 +213,9 @@ rpm -vv --checksig /out/{rpm_file} 2>&1
 
         podman_container_launcher(cmd.as_str(), "fedora:38", vec![])?;
 
-        let out_file = std::fs::File::open(&out_file).expect("should be able to open rpm file");
-        let mut buf_reader = std::io::BufReader::new(out_file);
-        let package = rpm::Package::parse(&mut buf_reader)?;
+        let package = rpm::Package::open(&out_file)?;
 
         package.verify_signature(verifier)?;
-
-        Ok(())
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_verify_raw_gpg_signature() -> Result<(), Box<dyn std::error::Error>> {
-        let _ = env_logger::try_init();
-        let (_signing_key, verification_key) = common::load_asc_keys();
-
-        let test_file = common::cargo_out_dir().join("test.file");
-        let test_file_sig = common::cargo_out_dir().join("test.file.sig");
-
-        std::fs::write(&test_file, "test").expect("Must be able to write");
-        let _ = std::fs::remove_file(&test_file_sig);
-
-        let cmd= r#"
-echo "test" > /out/test.file
-
-echo ">>> sign like rpm"
-cmd="$(rpm -vv --define "__signature_filename /out/test.file.sig" \
-        --define "__plaintext_filename /out/test.file" \
-        --define "_gpg_name Package Manager" \
-        --eval "%{__gpg_sign_cmd}" | sd '\n' ' ')"
-
-echo "cmd: ${cmd}"
-eval ${cmd}
-
-alias gpg='gpg --batch --verbose --keyid-format long --no-armor --pinentry-mode error --no-secmem-warning --local-user "Package Manager"'
-#gpg \
-#    --sign \
-#    --detach-sign \
-#    --output /out/test.file.sig \
-#    /out/test.file 2>&1
-
-echo ">>> inspect signature"
-gpg -d /out/test.file.sig 2>&1
-
-echo ">>> verify external gpg signature"
-gpg --verify /out/test.file.sig /out/test.file 2>&1
-
-"#.to_owned();
-
-        podman_container_launcher(cmd.as_str(), "fedora:38", vec![])
-            .expect("Container execution must be flawless");
-
-        let verifier =
-            Verifier::load_from_asc_bytes(verification_key.as_slice()).expect("Must load");
-
-        let raw_sig = std::fs::read(&test_file_sig).expect("must load signature");
-        let data = std::fs::read(&test_file).expect("must load file");
-        verifier.verify(data.as_slice(), raw_sig.as_slice())?;
 
         Ok(())
     }
@@ -325,7 +271,7 @@ fn podman_container_launcher(
     let var_cache = format!("{}:/var/cache/dnf:z", var_cache.display());
     let out = format!("{}:/out:z", common::cargo_out_dir().display());
     let assets = format!(
-        "{}/test_assets:/assets:z",
+        "{}/tests/assets:/assets:z",
         common::cargo_manifest_dir().display()
     );
     mappings.extend(vec![out, assets, var_cache]);
@@ -354,110 +300,33 @@ fn podman_container_launcher(
         r#"
 set -e
 
-# prepare rpm macros
-
-cat > ~/.rpmmacros << EOF_RPMMACROS
-%_signature gpg
-%_gpg_path /root/.gnupg
-%_gpg_name Package Manager
-%_gpgbin /usr/bin/gpg2
-%__gpg_sign_cmd %{__gpg} \
-    --batch \
-    --verbose \
-    --no-armor \
-    --keyid-format long \
-    --pinentry-mode error \
-    --no-secmem-warning \
-    %{?_gpg_digest_algo:--digest-algo %{_gpg_digest_algo}} \
-    --local-user "%{_gpg_name}" \
-    --sign \
-    --detach-sign \
-    --output %{__signature_filename} \
-    %{__plaintext_filename}
-EOF_RPMMACROS
-
-cat ~/.rpmmacros
-
-### either
-
-#cat > gpgkeyspec <<EOF
-#     %echo Generating a basic OpenPGP key
-#     Key-Type: RSA
-#     Key-Length: 2048
-#     Subkey-Type: RSA
-#     Subkey-Length: 2048
-#     Name-Real: Package Manager
-#     Name-Comment: unprotected
-#     Name-Email: pmanager@example.com
-#     Expire-Date: 0
-#     %no-ask-passphrase
-#     %no-protection
-#     %commit
-#     %echo done
-#EOF
-#gpg --batch --generate-key gpgkeyspec  2>&1
-
-### or (which has a couple of advantages regarding reproducibility)
-
-export PK=/assets/public_key.asc
-export SK=/assets/secret_key.asc
-
-gpg --allow-secret-key-import --import "${SK}" 2>&1
-gpg --import "${PK}" 2>&1
+pushd assets/
+sh configure_keys.sh
+popd
 
 gpg --keyid-format long --list-secret-keys
 gpg --keyid-format long --list-public-keys
 
-echo -e "5\ny\n" | gpg --no-tty --command-fd 0 --expert --edit-key 2E5A802A67EA36B83018F654CFD331925AB27F39 trust;
-
-
-
-echo "\### create a test signature with this particular key id"
-
-echo "test" | gpg -s --local-user "77500CC056DB3521" > /tmp/test.signature 2>&1
-gpg -d < /tmp/test.signature 2>&1
-
-echo "\### export PK"
-
-gpg --export -a "Package Manager" > /assets/RPM-GPG-KEY-pmanager
-
-dig1=$(gpg "/assets/RPM-GPG-KEY-pmanager" | sha256sum)
-dig2=$(gpg "${PK}" | sha256sum)
-
-if [ "$dig1" != "$dig2" ]; then
-echo "\### expected pub key and exported pubkey differ"
-    echo "EEE /assets/RPM-GPG-KEY-pmanager"
-    gpg /assets/RPM-GPG-KEY-pmanager
-    echo "EEE ${PK}"
-    gpg "${PK}"
-    exit 77
-fi
-
 echo "\### install tooling for signing"
 
-dnf install --disablerepo=updates,updates-testing,updates-modular -y rpm-sign sd || \
+dnf install --disablerepo=updates,updates-testing,updates-modular -y rpm-sign || \
 yum install --disablerepo=updates,updates-testing,updates-modular -y rpm-sign
-
-echo "\### import pub key"
-
-rpm -vv --import "${PK}" 2>&1
-
-rpm -vv --import "/assets/fixture_packages/signing_keys/public_rsa4096_protected.asc" 2>&1
 
 set -x
 
 "#,
-cmd,
-r#"
+        cmd,
+        r#"
 
 echo "\### Container should exit any second now"
 exit 0
-"#].join("\n");
+"#,
+    ]
+    .join("\n");
 
     println!("Container execution starting...");
 
-    // this is far from perfect, but at least pumps
-    // stdio and stderr out
+    // this is far from perfect, but at least pumps stdio and stderr out
     wait_and_print_helper(podman_cmd.spawn()?, cmd.as_str())?;
     println!("Container execution ended.");
     Ok(())

@@ -31,24 +31,24 @@ This library does not build software like rpmbuild. It is meant for finished art
 ```rust
 use rpm::signature::pgp::{Signer, Verifier};
 
-let raw_secret_key = std::fs::read("./test_assets/secret_key.asc")?;
+let raw_secret_key = std::fs::read("./tests/assets/signing_keys/secret_ed25519.asc")?;
 // It's recommended to use timestamp of last commit in your VCS
 let source_date = 1_600_000_000;
 let pkg = rpm::PackageBuilder::new("test", "1.0.0", "MIT", "x86_64", "some awesome package")
     .compression(rpm::CompressionType::Gzip)
     .with_file(
-        "./test_assets/awesome.toml",
+        "./tests/assets/SOURCES/example_config.toml",
         rpm::FileOptions::new("/etc/awesome/config.toml")
             .is_config()
             .is_no_replace(),
     )?
     // file mode is inherited from source file
     .with_file(
-        "./test_assets/awesome.py",
+        "./tests/assets/SOURCES/multiplication_tables.py",
         rpm::FileOptions::new("/usr/bin/awesome"),
     )?
     .with_file(
-        "./test_assets/awesome.toml",
+        "./tests/assets/SOURCES/example_config.toml",
         // you can set a custom mode and custom user too
         rpm::FileOptions::new("/etc/awesome/second.toml")
             .mode(rpm::FileMode::regular(0o644))
@@ -88,7 +88,7 @@ pkg.write_file("./awesome.rpm")?;
 
 // reading
 let raw_pub_key = std::fs::read("/path/to/gpg.key.pub")?;
-let pkg = rpm::Package::open("test_assets/389-ds-base-devel-1.3.8.4-15.el7.x86_64.rpm")?;
+let pkg = rpm::Package::open("tests/assets/RPMS/signed/noarch/rpm-basic-with-ed25519-2.3.4-5.el9.noarch.rpm")?;
 
 let name = pkg.metadata.get_name()?;
 let version = pkg.metadata.get_version()?;
