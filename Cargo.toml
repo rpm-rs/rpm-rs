@@ -46,7 +46,7 @@ digest = "0.10"
 sha2 = "0.10"
 md-5 = "0.10"
 sha1 = "0.10"
-pgp = { version = "0.14.0", optional = true }
+pgp = { version = "0.15.0", optional = true }
 chrono = { version = "0.4", optional = true }
 log = "0.4"
 itertools = "0.13"
