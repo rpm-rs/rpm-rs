@@ -1,9 +1,11 @@
 #![allow(clippy::too_many_arguments)]
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
 use std::io::Read;
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{fs, io};
@@ -249,6 +251,11 @@ pub struct PackageBuilder {
     default_file_attrs: FileDefaults,
     /// Default ownership and permissions for directory entries (like the dirmode in `%defattr`).
     default_dir_attrs: FileDefaults,
+
+    /// Maps cpio_path -> (dev, ino) for files added via `with_file()`.
+    /// Used to detect hardlinks: files sharing the same (dev, ino) are hardlinked.
+    #[cfg(unix)]
+    source_identities: HashMap<String, (u64, u64)>,
 
     /// Whether `build()` or `build_and_sign()` has already been called.
     consumed: bool,
@@ -560,6 +567,7 @@ impl PackageBuilder {
             modified_at,
             options,
             false,
+            Some(&metadata),
         )?;
         Ok(self)
     }
@@ -615,6 +623,7 @@ impl PackageBuilder {
             self.config.source_date.unwrap_or(Timestamp::now()),
             options,
             false,
+            None,
         )?;
         Ok(self)
     }
@@ -653,6 +662,7 @@ impl PackageBuilder {
             self.config.source_date.unwrap_or(Timestamp::now()),
             options,
             false,
+            None,
         )?;
         Ok(self)
     }
@@ -695,6 +705,7 @@ impl PackageBuilder {
             self.config.source_date.unwrap_or(Timestamp::now()),
             options,
             false,
+            None,
         )?;
         Ok(self)
     }
@@ -737,6 +748,7 @@ impl PackageBuilder {
             self.config.source_date.unwrap_or(Timestamp::now()),
             options,
             false,
+            None,
         )?;
         Ok(self)
     }
@@ -818,6 +830,7 @@ impl PackageBuilder {
             self.config.source_date.unwrap_or(Timestamp::now()),
             dir_options,
             true,
+            None,
         )?;
 
         for entry in fs::read_dir(source_dir)? {
@@ -839,6 +852,7 @@ impl PackageBuilder {
                     self.config.source_date.unwrap_or(Timestamp::now()),
                     options.into(),
                     true,
+                    None,
                 )?;
             } else {
                 let modified_at: Timestamp = metadata.modified()?.try_into()?;
@@ -861,6 +875,7 @@ impl PackageBuilder {
                     modified_at,
                     options,
                     true,
+                    Some(&metadata),
                 )?;
             }
         }
@@ -874,6 +889,7 @@ impl PackageBuilder {
         modified_at: Timestamp,
         mut options: FileOptions,
         bulk: bool,
+        #[allow(unused_variables)] source_metadata: Option<&fs::Metadata>,
     ) -> Result<(), Error> {
         // Apply builder-level defaults for ownership and permissions where
         // the FileOptions hasn't been explicitly overridden.
@@ -982,6 +998,13 @@ impl PackageBuilder {
         };
 
         self.directories.insert(dir);
+
+        #[cfg(unix)]
+        if let Some(meta) = source_metadata {
+            self.source_identities
+                .insert(cpio_path.clone(), (meta.dev(), meta.ino()));
+        }
+
         self.files.insert(cpio_path, entry);
         Ok(())
     }
@@ -1515,6 +1538,48 @@ impl PackageBuilder {
             &[HashKind::Sha256, HashKind::Sha512, HashKind::Sha3_256],
         );
 
+        // Build hardlink groups from source file identities.
+        // Maps cpio_path -> (synthetic_inode, nlink, is_last_in_group).
+        // Files not in any hardlink group get a unique inode with nlink=1.
+        #[allow(unused_mut)]
+        let mut hardlink_info: HashMap<String, (u32, u32, bool)> = HashMap::new();
+        #[cfg(unix)]
+        {
+            // Group cpio_paths by (dev, ino)
+            let mut identity_groups: HashMap<(u64, u64), Vec<String>> = HashMap::new();
+            for (cpio_path, identity) in &self.source_identities {
+                identity_groups
+                    .entry(*identity)
+                    .or_default()
+                    .push(cpio_path.clone());
+            }
+            // Assign shared inodes for groups with nlink > 1.
+            // Use the file_index of the first file in the group (matching RPM's approach).
+            for paths in identity_groups.values() {
+                if paths.len() < 2 {
+                    continue;
+                }
+                // Find the file index of the first path in BTreeMap iteration order
+                let first_index = self
+                    .files
+                    .keys()
+                    .position(|k| paths.contains(k))
+                    .expect("hardlink path not found in files");
+                let ino = (first_index + 1) as u32;
+                let nlink = paths.len() as u32;
+                // Determine which path is last in BTreeMap iteration order
+                let last_path = self
+                    .files
+                    .keys()
+                    .rev()
+                    .find(|k| paths.contains(k))
+                    .expect("hardlink path not found in files");
+                for path in paths {
+                    hardlink_info.insert(path.clone(), (ino, nlink, path == last_path));
+                }
+            }
+        }
+
         let mut ino_index = 1;
 
         let files_len = self.files.len();
@@ -1540,17 +1605,21 @@ impl PackageBuilder {
         let mut combined_file_sizes: u64 = 0;
         let mut uses_file_capabilities = false;
 
-        for entry in self.files.values() {
-            combined_file_sizes += entry.source.size()?;
+        for (cpio_path, entry) in self.files.iter() {
+            // Only count content once per hardlink group (installed size)
+            match hardlink_info.get(cpio_path.as_str()) {
+                Some(&(_, _, is_last)) if !is_last => {}
+                _ => combined_file_sizes += entry.source.size()?,
+            }
         }
 
         let uses_large_files =
             combined_file_sizes > u32::MAX.into() || self.config.format != RpmFormat::V4;
 
-        // Entries are sorted by path (BTreeMap iteration order) and duplicates are rejected
-        // in add_data(). Paths are also normalized there (collapsing slashes, stripping trailing
-        // slashes) to ensure deduplication works correctly.
-        for (file_index, (cpio_path, entry)) in self.files.iter_mut().enumerate() {
+        // Phase 1: Collect header metadata for all files in alphabetical order
+        // (BTreeMap iteration order). CPIO payload writing happens in phase 2.
+        let mut file_mtimes_resolved = Vec::with_capacity(files_len);
+        for (cpio_path, entry) in self.files.iter_mut() {
             if entry.caps.is_some() {
                 uses_file_capabilities = true;
             }
@@ -1561,30 +1630,28 @@ impl PackageBuilder {
                 groups_to_create.insert(entry.group.clone());
             }
             let is_ghost = entry.flags.contains(FileFlags::GHOST);
-            // Ghost files should report size 0 in headers since they have no payload content
             let file_size = entry.source.size()?;
             file_sizes.push(file_size);
             file_modes.push(entry.mode.into());
             file_caps.push(entry.caps.to_owned());
-            // The device ID that this file *represents* (st_rdev).
-            // Only meaningful for block/character device special files; always 0 otherwise.
             file_rdevs.push(0);
-            // The device ID of the filesystem *containing* the file (st_dev), normalized to 1 or 0.
-            // Ghost files have no backing file, so their st_dev is 0.
             file_devices.push(if is_ghost { 0 } else { 1 });
             let mtime = match self.config.source_date {
                 Some(d) if d < entry.modified_at => d,
                 _ => entry.modified_at,
             };
             file_mtimes.push(mtime.into());
+            file_mtimes_resolved.push(mtime);
             file_linktos.push(entry.link.to_owned());
             file_flags.push(entry.flags.bits());
             file_usernames.push(entry.user.to_owned());
             file_groupnames.push(entry.group.to_owned());
-            file_inodes.push(ino_index);
+            if let Some(&(ino, _, _)) = hardlink_info.get(cpio_path.as_str()) {
+                file_inodes.push(ino);
+            } else {
+                file_inodes.push(ino_index);
+            }
             file_langs.push("".to_string());
-            // safe because indexes cannot change after this as the RpmBuilder is consumed
-            // the dir is guaranteed to be there - or else there is a logic error
             let index = self
                 .directories
                 .iter()
@@ -1592,7 +1659,6 @@ impl PackageBuilder {
                 .unwrap();
             dir_indixes.push(index as u32);
             base_names.push(entry.base_name.to_owned());
-            // Ghost files have certain verify flags cleared
             let verify = if is_ghost {
                 entry.verify_flags
                     & !(FileVerifyFlags::FILEDIGEST
@@ -1604,41 +1670,82 @@ impl PackageBuilder {
             };
             file_verify_flags.push(verify.bits());
 
-            // Ghost files are not included in the CPIO payload and have no digest.
-            // Non-regular files (dirs, symlinks) also have empty digests per RPM convention.
+            // Compute file digests (independent of CPIO writing)
             if is_ghost {
                 file_hashes.push(String::new());
-                ino_index += 1;
-                continue;
-            }
-
-            let mut writer = if !uses_large_files {
-                payload::Builder::new(cpio_path)
-                    .mode(entry.mode.into())
-                    .ino(ino_index)
-                    .nlink(1)
-                    .mtime(mtime.into())
-                    .uid(self.uid.unwrap_or(0))
-                    .gid(self.gid.unwrap_or(0))
-                    .write_cpio(&mut archive, entry.source.size()? as u32)
-            } else {
-                payload::write_stripped_cpio(&mut archive, file_index as u32, entry.source.size()?)
-            };
-            // Only regular files have digests; dirs and symlinks get empty strings
-            if entry.mode.file_type() == FileType::Regular {
-                let mut hash_writer = ChecksummingWriter::new(&mut writer, &[HashKind::Sha256]);
-                io::copy(&mut entry.source.try_into_bufread()?, &mut hash_writer)?;
-                let hash_value_map = hash_writer.into_digests().0;
-                writer.finish()?;
+            } else if entry.mode.file_type() == FileType::Regular {
+                let mut hasher = ChecksummingWriter::new(io::sink(), &[HashKind::Sha256]);
+                io::copy(&mut entry.source.try_into_bufread()?, &mut hasher)?;
+                let hash_value_map = hasher.into_digests().0;
                 if let Some(hash_value) = hash_value_map.get(&HashKind::Sha256) {
                     file_hashes.push(hash_value.to_string());
                 }
             } else {
-                io::copy(&mut entry.source.try_into_bufread()?, &mut writer)?;
-                writer.finish()?;
                 file_hashes.push(String::new());
             }
             ino_index += 1;
+        }
+
+        // Phase 2: Write CPIO payload entries.
+        // RPM writes non-hardlinked files first, then hardlinked groups.
+        // Within each category, files appear in file index (alphabetical) order.
+        let file_keys: Vec<String> = self.files.keys().cloned().collect();
+        let mut cpio_order: Vec<usize> = Vec::with_capacity(files_len);
+        // Non-hardlinked and non-ghost files first
+        for (file_index, cpio_path) in file_keys.iter().enumerate() {
+            let entry = &self.files[cpio_path];
+            if entry.flags.contains(FileFlags::GHOST) {
+                continue;
+            }
+            if hardlink_info.contains_key(cpio_path.as_str()) {
+                continue;
+            }
+            cpio_order.push(file_index);
+        }
+        // Then hardlinked files (in file index order)
+        for (file_index, cpio_path) in file_keys.iter().enumerate() {
+            let entry = &self.files[cpio_path];
+            if entry.flags.contains(FileFlags::GHOST) {
+                continue;
+            }
+            if !hardlink_info.contains_key(cpio_path.as_str()) {
+                continue;
+            }
+            cpio_order.push(file_index);
+        }
+
+        for &file_index in &cpio_order {
+            let cpio_path = &file_keys[file_index];
+            let entry = &self.files[cpio_path];
+            let mtime = file_mtimes_resolved[file_index];
+
+            let (ino, nlink, is_last) = hardlink_info.get(cpio_path.as_str()).copied().unwrap_or((
+                file_inodes[file_index],
+                1,
+                true,
+            ));
+
+            // Non-last hardlinks get a zero-size CPIO entry (content is
+            // stored only once, with the last entry in the group).
+            let payload_size = if is_last { entry.source.size()? } else { 0 };
+
+            let mut writer = if !uses_large_files {
+                payload::Builder::new(cpio_path)
+                    .mode(entry.mode.into())
+                    .ino(ino)
+                    .nlink(nlink)
+                    .mtime(mtime.into())
+                    .uid(self.uid.unwrap_or(0))
+                    .gid(self.gid.unwrap_or(0))
+                    .write_cpio(&mut archive, payload_size as u32)
+            } else {
+                payload::write_stripped_cpio(&mut archive, file_index as u32, payload_size)
+            };
+
+            if payload_size > 0 {
+                io::copy(&mut entry.source.try_into_bufread()?, &mut writer)?;
+            }
+            writer.finish()?;
         }
         payload::trailer(&mut archive)?;
 
