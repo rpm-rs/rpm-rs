@@ -13,13 +13,14 @@ use std::path::{Path, PathBuf};
 
 use base64::prelude::*;
 use digest::Digest;
+use rpm_version::Evr;
 
 use super::compressor::Compressor;
 use super::headers::*;
 use super::payload;
 use super::util::{ChecksummingWriter, HashKind};
 use crate::errors::*;
-use crate::{Evr, Timestamp, constants::*};
+use crate::{Timestamp, constants::*};
 
 #[cfg(feature = "signature-meta")]
 use crate::signature;

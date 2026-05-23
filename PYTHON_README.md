@@ -383,22 +383,3 @@ pkg.write_to("/tmp/awesome.rpm")
 # Or write to a directory with auto-generated filename (`/tmp/awesome-0.1.0-1.x86_64.rpm`)
 pkg.write_to("/tmp")
 ```
-
-### Version comparison
-
-```python
-from rpm_rs import Evr, Nevra, evr_compare
-
-# Compare EVR strings directly
-assert evr_compare("1.2.3-4", "1.2.3-5") == -1
-assert evr_compare("2:1.0-1", "1:9.9-1") == 1
-
-# Or use the Evr object for structured comparisons
-v1 = Evr.parse("1:2.3.4-5")
-v2 = Evr.parse("1:2.3.4-6")
-assert v1 < v2
-
-# Full NEVRA (Name-Epoch-Version-Release-Architecture) parsing
-nevra = Nevra.parse("foo-1:2.3.4-5.x86_64")
-print(f"{nevra.name} {nevra.version} {nevra.arch}")  # foo 2.3.4 x86_64
-```

@@ -8,8 +8,9 @@ use std::{
 
 use digest::Digest;
 use num_traits::FromPrimitive;
+use rpm_version::Nevra;
 
-use crate::{CompressionType, Nevra, constants::*, errors::*};
+use crate::{CompressionType, constants::*, errors::*};
 
 #[cfg(feature = "signature-pgp")]
 use crate::signature::pgp::Verifier;
