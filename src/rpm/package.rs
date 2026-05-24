@@ -8,7 +8,6 @@ use std::{
 
 use digest::Digest;
 use num_traits::FromPrimitive;
-use rpm_version::Nevra;
 
 use crate::{CompressionType, constants::*, errors::*};
 
@@ -785,18 +784,32 @@ impl PackageMetadata {
     }
 
     /// Get the package Nevra
-    ///
-    /// See: [crate::Nevra]
     #[inline]
-    pub fn get_nevra(&'_ self) -> Result<Nevra<'_>, Error> {
-        // Epoch defaults to 0 if not present
-        let epoch = self.get_epoch().unwrap_or(0);
-        Ok(Nevra::new(
+    pub fn get_nevra(&'_ self) -> Result<rpm_version::Nevra<'_>, Error> {
+        let epoch = match self.get_epoch() {
+            Ok(e) => Cow::Owned(e.to_string()),
+            Err(_) => Cow::Borrowed(""),
+        };
+        Ok(rpm_version::Nevra::new(
             Cow::Borrowed(self.get_name()?),
-            Cow::Owned(epoch.to_string()),
+            epoch,
             Cow::Borrowed(self.get_version()?),
             Cow::Borrowed(self.get_release()?),
             Cow::Borrowed(self.get_arch()?),
+        ))
+    }
+
+    /// Get the package Evr
+    #[inline]
+    pub fn get_evr(&'_ self) -> Result<rpm_version::Evr<'_>, Error> {
+        let epoch = match self.get_epoch() {
+            Ok(e) => Cow::Owned(e.to_string()),
+            Err(_) => Cow::Borrowed(""),
+        };
+        Ok(rpm_version::Evr::new(
+            epoch,
+            Cow::Borrowed(self.get_version()?),
+            Cow::Borrowed(self.get_release()?),
         ))
     }
 

@@ -10,13 +10,14 @@
 //! With maturin, create a `pyproject.toml` that specifies `features = ["python"]` and run
 //! `maturin develop` or `maturin build`.
 
-use std::cmp::Ordering;
 use std::io::{BufReader, Cursor};
 use std::path::PathBuf;
 
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyType};
+
+use rpm_version::python::{PyEvr, PyNevra};
 
 /// Convert an rpm::Error into a Python exception.
 fn to_pyerr(e: crate::Error) -> PyErr {
@@ -653,9 +654,30 @@ impl PyPackageMetadata {
         self.0.get_arch().map(str::to_owned).map_err(to_pyerr)
     }
 
-    /// The full NEVRA as a structured object.
+    /// The full NEVRA as a structured object that can be sorted on, printed, etc.
+    ///
+    /// # Example
+    /// ```python
+    /// pkgs = [PackageMetadata.open("bash-5.2.26-3.fc42.x86_64.rpm"),
+    ///         PackageMetadata.open("bash-5.2.15-3.fc40.x86_64.rpm")]
+    /// pkgs.sort(key=lambda p: p.nevra())
+    /// print([str(p.nevra()) for p in pkgs])
+    /// # ["bash-5.2.15-3.fc40.x86_64", "bash-5.2.26-3.fc42.x86_64"]
+    /// ```
     fn nevra(&self) -> PyResult<PyNevra> {
-        self.0.get_nevra().map(PyNevra::from).map_err(to_pyerr)
+        self.0.get_nevra().map_err(to_pyerr).map(PyNevra::from)
+    }
+
+    /// The full EVR as a structured object that can be sorted on, printed, etc.
+    ///
+    /// # Example
+    /// ```python
+    /// old = PackageMetadata.open("bash-5.2.15-3.fc40.x86_64.rpm")
+    /// new = PackageMetadata.open("bash-5.2.26-3.fc42.x86_64.rpm")
+    /// assert old.evr() < new.evr()
+    /// ```
+    fn evr(&self) -> PyResult<PyEvr> {
+        self.0.get_evr().map_err(to_pyerr).map(PyEvr::from)
     }
 
     // --- Description ---
@@ -2640,8 +2662,6 @@ pub fn rpm_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyHeader>()?;
     m.add_class::<PyPackageSegmentOffsets>()?;
     m.add_class::<PyRpmFile>()?;
-    m.add_class::<PyEvr>()?;
-    m.add_class::<PyNevra>()?;
     m.add_class::<PyDependency>()?;
     m.add_class::<PyFileEntry>()?;
     m.add_class::<PyFileType>()?;
@@ -2666,7 +2686,8 @@ pub fn rpm_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDigestReport>()?;
     m.add_class::<PySignatureCheckResult>()?;
     m.add_class::<PySignatureReport>()?;
-    m.add_function(wrap_pyfunction!(evr_compare, m)?)?;
+    m.add_class::<PyEvr>()?;
+    m.add_class::<PyNevra>()?;
 
     // Tag enums for raw header access
     m.add(

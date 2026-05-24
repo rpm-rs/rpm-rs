@@ -8,8 +8,10 @@ from rpm_rs import (
     ChangelogEntry,
     Dependency,
     DigestAlgorithm,
+    Evr,
     FileEntry,
     FileType,
+    Nevra,
     Package,
     PackageMetadata,
     Scriptlet,
@@ -65,8 +67,20 @@ class TestIdentity:
     def test_nevra(self):
         m = PackageMetadata.open(RPM_BASIC)
         n = m.nevra()
+        assert isinstance(n, Nevra)
         assert n.name == "rpm-basic"
+        assert n.epoch == "1"
+        assert n.version == "2.3.4"
+        assert n.release == "5.el9"
         assert n.arch == "noarch"
+
+    def test_evr(self):
+        m = PackageMetadata.open(RPM_BASIC)
+        e = m.evr()
+        assert isinstance(e, Evr)
+        assert e.epoch == "1"
+        assert e.version == "2.3.4"
+        assert e.release == "5.el9"
 
     def test_is_source_package_false(self):
         m = PackageMetadata.open(RPM_BASIC)
@@ -75,6 +89,25 @@ class TestIdentity:
     def test_is_source_package_true(self):
         m = PackageMetadata.open(SRPM_BASIC)
         assert m.is_source_package() is True
+
+
+class TestSorting:
+    def test_sort_by_nevra(self):
+        basic = PackageMetadata.open(RPM_BASIC)
+        scriptlets = PackageMetadata.open(RPM_SCRIPTLETS)
+        pkgs = [scriptlets, basic]
+        pkgs.sort(key=lambda p: p.nevra())
+        assert pkgs[0].name == "rpm-basic"
+        assert pkgs[1].name == "rpm-scriptlets"
+
+    def test_sort_by_evr(self):
+        # rpm-basic has epoch 1; rpm-empty has epoch 0
+        basic = PackageMetadata.open(RPM_BASIC)
+        empty = PackageMetadata.open(RPM_EMPTY)
+        pkgs = [basic, empty]
+        pkgs.sort(key=lambda p: p.evr())
+        assert pkgs[0].name == "rpm-empty"
+        assert pkgs[1].name == "rpm-basic"
 
 
 class TestDescription:

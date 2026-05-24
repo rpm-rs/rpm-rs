@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.24.0
+
+## Added
+
+- `PackageMetadata::get_evr()`
+
 ## Removed
 
 - Removed the `Nevra` and `Evr` structs for EVR/NEVRA parsing & sorting. These have been moved to a separate `rpm-version` crate.
