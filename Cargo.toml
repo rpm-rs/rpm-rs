@@ -1,6 +1,6 @@
 [package]
 name = "rpm"
-version = "0.23.5"
+version = "0.24.0"
 authors = [
   "René Richter <richterrettich@gmail.com>",
   "Bernhard Schuster <bernhard@ahoi.io>",
@@ -72,7 +72,7 @@ liblzma = { version = "0.4", optional = true }
 flate2 = { version = "1", optional = true, default-features = false, features = ["zlib-rs"] }
 bzip2 = { version = "0.6", optional = true }
 zeroize = "1"
-rpm-version = "0.1"
+rpm-version = { version = "0.4.0" }
 
 [dev-dependencies]
 env_logger = "0.11"
@@ -94,7 +94,7 @@ default = [
 ]
 
 payload = []
-python = ["pyo3/extension-module", "pyo3/abi3-py310", "liblzma?/static", "payload", "signature-pgp"]
+python = ["pyo3/extension-module", "pyo3/abi3-py310", "liblzma?/static", "payload", "signature-pgp", "rpm-version/python"]
 
 gzip-compression = ["flate2"]
 zstd-compression = ["zstd"]
