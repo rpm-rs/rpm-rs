@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## Misc
+
+- CI now includes an ARM64 runner for Linux, and uploads ARM64 (Aarch64) packages to PyPI.
+
 ## 0.24.0
 
 ## Added
