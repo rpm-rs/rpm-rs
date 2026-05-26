@@ -93,8 +93,13 @@ jobs:
       - run: cargo test --features test-with-podman
 
   python-tests:
-    name: Python Tests
-    runs-on: ubuntu-latest
+    name: Python Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -103,6 +108,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           args: --release --out dist
+          manylinux: 2_28
       - run: pip install dist/*.whl pytest
       - run: pytest tests/python/
 
