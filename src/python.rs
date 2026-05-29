@@ -211,37 +211,6 @@ impl PyFileDigest {
 }
 
 // ---------------------------------------------------------------------------
-// FileOwnership
-// ---------------------------------------------------------------------------
-
-/// The owning user and group of a file entry.
-#[pyclass(name = "FileOwnership", from_py_object)]
-#[derive(Clone)]
-pub struct PyFileOwnership(pub(crate) crate::FileOwnership);
-
-#[pymethods]
-impl PyFileOwnership {
-    fn __repr__(&self) -> String {
-        format!(
-            "FileOwnership(user={:?}, group={:?})",
-            self.0.user, self.0.group
-        )
-    }
-
-    /// The owning user name.
-    #[getter]
-    fn user(&self) -> &str {
-        &self.0.user
-    }
-
-    /// The owning group name.
-    #[getter]
-    fn group(&self) -> &str {
-        &self.0.group
-    }
-}
-
-// ---------------------------------------------------------------------------
 // FileEntry
 // ---------------------------------------------------------------------------
 
@@ -253,69 +222,81 @@ pub struct PyFileEntry(pub(crate) crate::FileEntry);
 #[pymethods]
 impl PyFileEntry {
     fn __repr__(&self) -> String {
-        format!("FileEntry({:?})", self.0.path.display().to_string())
+        format!("FileEntry({:?})", self.0.path().display().to_string())
     }
 
     /// The full installation path of this file (e.g. "/usr/bin/foo").
     #[getter]
     fn path(&self) -> String {
-        self.0.path.display().to_string()
+        self.0.path().display().to_string()
+    }
+
+    /// The owning user.
+    #[getter]
+    fn user(&self) -> &str {
+        self.0.user()
+    }
+
+    /// The owning group.
+    #[getter]
+    fn group(&self) -> &str {
+        self.0.group()
     }
 
     /// The file mode (type and permissions).
     #[getter]
     fn mode(&self) -> PyFileMode {
-        PyFileMode(self.0.mode)
+        PyFileMode(self.0.mode())
     }
 
-    /// The owning user and group.
+    /// The permission bits (e.g. 0o755). Includes setuid/setgid/sticky.
     #[getter]
-    fn ownership(&self) -> PyFileOwnership {
-        PyFileOwnership(self.0.ownership.clone())
+    fn permissions(&self) -> u16 {
+        self.0.permissions()
     }
 
     /// Last modified timestamp as seconds since the Unix epoch.
     #[getter]
     fn modified_at(&self) -> u32 {
-        self.0.modified_at.0
+        self.0.modified_at().0
     }
 
     /// The size of the file in bytes.
     /// Note: for directories this is the inode size, not the directory content size.
     #[getter]
     fn size(&self) -> usize {
-        self.0.size
+        self.0.size()
     }
 
     /// File flags as a `FileFlags` IntFlag value (DOC, CONFIG, GHOST, LICENSE, etc.).
     #[getter]
     fn flags(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cls = py.import("rpm_rs")?.getattr("FileFlags")?;
-        Ok(cls.call1((self.0.flags.bits(),))?.into())
+        Ok(cls.call1((self.0.flags().bits(),))?.into())
     }
 
     /// The checksum of this file, or None if not present.
     #[getter]
     fn digest(&self) -> Option<PyFileDigest> {
-        self.0.digest.clone().map(PyFileDigest)
+        self.0.digest().cloned().map(PyFileDigest)
     }
 
     /// POSIX capabilities string for this file, or None.
     #[getter]
-    fn caps(&self) -> Option<String> {
-        self.0.caps.clone()
+    fn caps(&self) -> Option<&str> {
+        self.0.caps()
     }
 
     /// Symlink target path, or None if this is not a symlink.
     #[getter]
     fn linkto(&self) -> Option<&str> {
-        self.0.linkto.as_deref()
+        self.0.linkto()
     }
 
     /// IMA (Integrity Measurement Architecture) signature, or None.
     #[getter]
-    fn ima_signature(&self) -> Option<String> {
-        self.0.ima_signature.clone()
+    fn ima_signature(&self) -> Option<&str> {
+        self.0.ima_signature()
     }
 }
 
@@ -2667,7 +2648,6 @@ pub fn rpm_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFileType>()?;
     m.add_class::<PyFileMode>()?;
     m.add_class::<PyFileDigest>()?;
-    m.add_class::<PyFileOwnership>()?;
     m.add_class::<PyChangelogEntry>()?;
     m.add_class::<PyScriptlet>()?;
     m.add_class::<PyTrigger>()?;

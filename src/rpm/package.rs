@@ -1261,7 +1261,7 @@ impl PackageMetadata {
             )
     }
 
-    /// Extract a the set of contained file names.
+    /// Extract the set of contained file names.
     ///
     /// # Examples
     ///
@@ -1274,7 +1274,6 @@ impl PackageMetadata {
     /// # Ok(()) }
     /// ```
     pub fn get_file_paths(&self) -> Result<Vec<PathBuf>, Error> {
-        // reconstruct the messy de-constructed paths
         let basenames = self
             .header
             .get_entry_data_as_string_array(IndexTag::RPMTAG_BASENAMES);
@@ -1335,7 +1334,7 @@ impl PackageMetadata {
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let package = rpm::Package::open("tests/assets/RPMS/v4/rpm-basic-2.3.4-5.el9.noarch.rpm")?;
     /// for entry in package.metadata.get_file_entries()? {
-    ///     println!("{} is {} bytes", entry.path.display(), entry.size);
+    ///     println!("{} is {} bytes", entry.path().display(), entry.size());
     /// }
     /// # Ok(()) }
     /// ```

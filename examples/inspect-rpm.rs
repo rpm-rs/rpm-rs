@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !entries.is_empty() {
             println!("Files ({}):", entries.len());
             for entry in &entries {
-                println!("  {}", entry.path.display());
+                println!("  {}", entry.path().display());
             }
         }
     }

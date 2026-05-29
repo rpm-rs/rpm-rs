@@ -126,8 +126,8 @@ class TestFiles:
         pkg = b.build()
         entries = pkg.metadata.file_entries()
         entry = [e for e in entries if e.path == "/usr/bin/test"][0]
-        assert entry.mode.permissions == 0o755
-        assert entry.ownership.user == "testuser"
+        assert entry.permissions == 0o755
+        assert entry.user == "testuser"
 
     def test_with_config_file(self):
         b = PackageBuilder("test", "1.0", "MIT", "noarch")

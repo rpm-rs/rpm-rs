@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.25.0
+
+## Added
+
+- `FileEntry::permissions()`, `FileEntry::user()`, `FileEntry::group()`
+
+## Breaking Changes
+
+- `FileEntry` fields are made private, accessor methods are provided instead.
+- `FileEntry::ownership()` not carried over, use `.user()` and `.group()` instead
+
 ## Misc
 
 - CI now includes an ARM64 runner for Linux, and uploads ARM64 (Aarch64) packages to PyPI.
