@@ -54,7 +54,7 @@ impl Package {
     /// for entry in package.files()? {
     ///     let file = entry?;
     ///     // do something with file.content
-    ///     println!("{} is {} bytes", file.metadata.path.display(), file.content.len());
+    ///     println!("{} is {} bytes", file.metadata.path().display(), file.content.len());
     /// }
     /// # Ok(()) }
     /// ```
@@ -130,13 +130,12 @@ impl Package {
             let file_path = dest
                 .as_ref()
                 .join(file_entry.path.strip_prefix("/").unwrap_or(dest.as_ref()));
-            match file_entry.mode.file_type() {
+            match file_entry.file_type() {
                 FileType::Dir => {
                     fs::create_dir_all(&file_path)?;
                     #[cfg(unix)]
                     {
-                        let perms =
-                            fs::Permissions::from_mode(file_entry.mode.permissions().into());
+                        let perms = fs::Permissions::from_mode(file_entry.permissions().into());
                         fs::set_permissions(&file_path, perms)?;
                     }
                 }
@@ -145,8 +144,7 @@ impl Package {
                     io::copy(&mut entry_reader, &mut f)?;
                     #[cfg(unix)]
                     {
-                        let perms =
-                            fs::Permissions::from_mode(file_entry.mode.permissions().into());
+                        let perms = fs::Permissions::from_mode(file_entry.permissions().into());
                         f.set_permissions(perms)?;
                     }
                 }

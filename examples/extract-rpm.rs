@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for file in pkg.files()? {
         let file = file?;
-        println!("  {}", file.metadata.path.display());
+        println!("  {}", file.metadata.path().display());
     }
 
     pkg.extract(&args.dest)?;

@@ -6,7 +6,7 @@ use std::{
     fmt::{self, Display},
     io,
     marker::PhantomData,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use super::*;
@@ -667,25 +667,91 @@ pub struct ChangelogEntry {
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct FileEntry {
     /// Full path of the file entry and where it will be installed to.
-    pub path: PathBuf,
+    pub(crate) path: PathBuf,
     /// The file mode of the file.
-    pub mode: types::FileMode,
+    pub(crate) mode: types::FileMode,
     /// Defines the owning user and group.
-    pub ownership: FileOwnership,
+    pub(crate) ownership: FileOwnership,
     /// Clocks the last access time.
-    pub modified_at: Timestamp,
+    pub(crate) modified_at: Timestamp,
     /// The size of this file, dirs have the inode size (which is insane)
-    pub size: usize,
+    pub(crate) size: usize,
     /// Flags describing the file or directory into three groups.
-    pub flags: FileFlags,
+    pub(crate) flags: FileFlags,
     // @todo SELinux context? how is that done?
-    pub digest: Option<FileDigest>,
+    pub(crate) digest: Option<FileDigest>,
     /// Defines any capabilities on the file.
-    pub caps: Option<String>,
+    pub(crate) caps: Option<String>,
     /// Defines a target of a symlink (if the file is a symbolic link).
-    pub linkto: Option<String>,
+    pub(crate) linkto: Option<String>,
     /// Integrity Measurement Architecture (IMA) signature.
-    pub ima_signature: Option<String>,
+    pub(crate) ima_signature: Option<String>,
+}
+
+impl FileEntry {
+    /// Returns the full installation path of this file entry.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Returns the file mode (permissions and type bits).
+    pub fn mode(&self) -> types::FileMode {
+        self.mode
+    }
+
+    /// Returns the owning user of this file entry.
+    pub fn user(&self) -> &str {
+        &self.ownership.user
+    }
+
+    /// Returns the owning group of this file entry.
+    pub fn group(&self) -> &str {
+        &self.ownership.group
+    }
+
+    /// Returns the permission bits of this file entry (including setuid/setgid/sticky).
+    pub fn permissions(&self) -> u16 {
+        self.mode.permissions()
+    }
+
+    //// Returns the [`FileType`]` of this file entry.
+    pub fn file_type(&self) -> FileType {
+        self.mode.file_type()
+    }
+
+    /// Returns the last-modified timestamp of this file entry.
+    pub fn modified_at(&self) -> Timestamp {
+        self.modified_at
+    }
+
+    /// Returns the size of this file in bytes.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// Returns the flags describing this file (e.g. config, doc, ghost).
+    pub fn flags(&self) -> FileFlags {
+        self.flags
+    }
+    /// Returns the cryptographic digest of this file, if present.
+    pub fn digest(&self) -> Option<&FileDigest> {
+        self.digest.as_ref()
+    }
+
+    /// Returns the capability string for this file, if any.
+    pub fn caps(&self) -> Option<&str> {
+        self.caps.as_deref()
+    }
+
+    /// Returns the symlink target of this file, if it is a symbolic link.
+    pub fn linkto(&self) -> Option<&str> {
+        self.linkto.as_deref()
+    }
+
+    /// Returns the IMA (Integrity Measurement Architecture) signature, if present.
+    pub fn ima_signature(&self) -> Option<&str> {
+        self.ima_signature.as_deref()
+    }
 }
 
 fn parse_entry_data_number<'a, T, E, F>(
