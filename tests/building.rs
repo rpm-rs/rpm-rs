@@ -380,27 +380,27 @@ fn test_build_with_new_file_api() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify file entry metadata
     for entry in &file_entries {
-        match entry.path.to_str().unwrap() {
+        match entry.path().to_str().unwrap() {
             "/etc/test/config.toml" => {
-                assert!(entry.flags.contains(FileFlags::CONFIG));
-                assert_eq!(entry.mode.file_type(), FileType::Regular);
-                assert_eq!(entry.mode.permissions(), 0o644);
+                assert!(entry.flags().contains(FileFlags::CONFIG));
+                assert_eq!(entry.file_type(), FileType::Regular);
+                assert_eq!(entry.permissions(), 0o644);
             }
             "/usr/bin/test_link" => {
-                assert_eq!(entry.mode.file_type(), FileType::SymbolicLink);
-                assert_eq!(entry.linkto.as_deref(), Some("/usr/bin/test_target"));
+                assert_eq!(entry.file_type(), FileType::SymbolicLink);
+                assert_eq!(entry.linkto().as_deref(), Some("/usr/bin/test_target"));
             }
             "/var/log/testapp" => {
-                assert_eq!(entry.mode.file_type(), FileType::Dir);
-                assert_eq!(entry.mode.permissions(), 0o750);
+                assert_eq!(entry.file_type(), FileType::Dir);
+                assert_eq!(entry.permissions(), 0o750);
             }
             "/var/log/testapp/app.log" => {
-                assert!(entry.flags.contains(FileFlags::GHOST));
-                assert_eq!(entry.mode.file_type(), FileType::Regular);
+                assert!(entry.flags().contains(FileFlags::GHOST));
+                assert_eq!(entry.file_type(), FileType::Regular);
             }
             "/var/run/testapp" => {
-                assert!(entry.flags.contains(FileFlags::GHOST));
-                assert_eq!(entry.mode.file_type(), FileType::Dir);
+                assert!(entry.flags().contains(FileFlags::GHOST));
+                assert_eq!(entry.file_type(), FileType::Dir);
             }
             _ => {}
         }
@@ -423,7 +423,7 @@ fn test_with_dir_basic() -> Result<(), Box<dyn std::error::Error>> {
     pkg.write(&mut buf)?;
     let parsed = Package::parse(&mut buf.as_slice())?;
     let entries = parsed.metadata.get_file_entries()?;
-    let paths: Vec<_> = entries.iter().map(|e| e.path.as_path()).collect();
+    let paths: Vec<_> = entries.iter().map(|e| e.path()).collect();
 
     // Should have directory entry + 2 files
     assert_eq!(
@@ -436,12 +436,12 @@ fn test_with_dir_basic() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Directory entry
-    assert_eq!(entries[0].mode.file_type(), FileType::Dir);
-    assert_eq!(entries[0].size, 0);
+    assert_eq!(entries[0].file_type(), FileType::Dir);
+    assert_eq!(entries[0].size(), 0);
 
     // Files should be regular
-    assert_eq!(entries[1].mode.file_type(), FileType::Regular);
-    assert_eq!(entries[2].mode.file_type(), FileType::Regular);
+    assert_eq!(entries[1].file_type(), FileType::Regular);
+    assert_eq!(entries[2].file_type(), FileType::Regular);
 
     Ok(())
 }
@@ -470,11 +470,11 @@ fn test_with_dir_explicit_override_before_bulk() -> Result<(), Box<dyn std::erro
 
     let init_entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/usr/lib/mymodule/__init__.py"))
+        .find(|e| e.path() == Path::new("/usr/lib/mymodule/__init__.py"))
         .expect("__init__.py should be present");
 
     // The explicitly-added CONFIG flag should be preserved (not overwritten by bulk)
-    assert!(init_entry.flags.contains(FileFlags::CONFIG));
+    assert!(init_entry.flags().contains(FileFlags::CONFIG));
 
     Ok(())
 }
@@ -503,11 +503,11 @@ fn test_with_dir_explicit_override_after_bulk() -> Result<(), Box<dyn std::error
 
     let init_entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/usr/lib/mymodule/__init__.py"))
+        .find(|e| e.path() == Path::new("/usr/lib/mymodule/__init__.py"))
         .expect("__init__.py should be present");
 
     // The explicit CONFIG flag should be present (replaced the bulk entry)
-    assert!(init_entry.flags.contains(FileFlags::CONFIG));
+    assert!(init_entry.flags().contains(FileFlags::CONFIG));
 
     Ok(())
 }
@@ -531,12 +531,12 @@ fn test_with_dir_overlapping_bulk_first_wins() -> Result<(), Box<dyn std::error:
 
     let init_entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/usr/lib/mymodule/__init__.py"))
+        .find(|e| e.path() == Path::new("/usr/lib/mymodule/__init__.py"))
         .expect("__init__.py should be present");
 
     // First bulk add used config(), second used doc(). First should win.
-    assert!(init_entry.flags.contains(FileFlags::CONFIG));
-    assert!(!init_entry.flags.contains(FileFlags::DOC));
+    assert!(init_entry.flags().contains(FileFlags::CONFIG));
+    assert!(!init_entry.flags().contains(FileFlags::DOC));
 
     Ok(())
 }
@@ -560,20 +560,20 @@ fn test_with_dir_strips_flags_from_dirs() -> Result<(), Box<dyn std::error::Erro
 
     let dir_entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/usr/lib/mymodule"))
+        .find(|e| e.path() == Path::new("/usr/lib/mymodule"))
         .expect("directory entry should be present");
-    assert_eq!(dir_entry.mode.file_type(), FileType::Dir);
+    assert_eq!(dir_entry.file_type(), FileType::Dir);
     assert!(
-        !dir_entry.flags.contains(FileFlags::CONFIG),
+        !dir_entry.flags().contains(FileFlags::CONFIG),
         "CONFIG should be stripped from directory entries"
     );
 
     let file_entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/usr/lib/mymodule/hello.py"))
+        .find(|e| e.path() == Path::new("/usr/lib/mymodule/hello.py"))
         .expect("hello.py should be present");
     assert!(
-        file_entry.flags.contains(FileFlags::CONFIG),
+        file_entry.flags().contains(FileFlags::CONFIG),
         "CONFIG should be preserved on file entries"
     );
 
@@ -597,12 +597,12 @@ fn test_default_file_attrs() -> Result<(), Box<dyn std::error::Error>> {
 
     let entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/usr/bin/myapp"))
+        .find(|e| e.path() == Path::new("/usr/bin/myapp"))
         .expect("file should be present");
 
-    assert_eq!(entry.mode.permissions(), 0o755);
-    assert_eq!(entry.ownership.user, "myuser");
-    assert_eq!(entry.ownership.group, "mygroup");
+    assert_eq!(entry.permissions(), 0o755);
+    assert_eq!(entry.user(), "myuser");
+    assert_eq!(entry.group(), "mygroup");
 
     Ok(())
 }
@@ -622,12 +622,12 @@ fn test_default_dir_attrs() -> Result<(), Box<dyn std::error::Error>> {
 
     let entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/var/log/myapp"))
+        .find(|e| e.path() == Path::new("/var/log/myapp"))
         .expect("dir should be present");
 
-    assert_eq!(entry.mode.permissions(), 0o700);
-    assert_eq!(entry.ownership.user, "diruser");
-    assert_eq!(entry.ownership.group, "dirgroup");
+    assert_eq!(entry.permissions(), 0o700);
+    assert_eq!(entry.user(), "diruser");
+    assert_eq!(entry.group(), "dirgroup");
 
     Ok(())
 }
@@ -655,19 +655,19 @@ fn test_default_attrs_file_vs_dir() -> Result<(), Box<dyn std::error::Error>> {
 
     let file_entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/etc/myapp.conf"))
+        .find(|e| e.path() == Path::new("/etc/myapp.conf"))
         .expect("file should be present");
-    assert_eq!(file_entry.mode.permissions(), 0o644);
-    assert_eq!(file_entry.ownership.user, "fileuser");
-    assert_eq!(file_entry.ownership.group, "filegroup");
+    assert_eq!(file_entry.permissions(), 0o644);
+    assert_eq!(file_entry.user(), "fileuser");
+    assert_eq!(file_entry.group(), "filegroup");
 
     let dir_entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/var/log/myapp"))
+        .find(|e| e.path() == Path::new("/var/log/myapp"))
         .expect("dir should be present");
-    assert_eq!(dir_entry.mode.permissions(), 0o755);
-    assert_eq!(dir_entry.ownership.user, "diruser");
-    assert_eq!(dir_entry.ownership.group, "dirgroup");
+    assert_eq!(dir_entry.permissions(), 0o755);
+    assert_eq!(dir_entry.user(), "diruser");
+    assert_eq!(dir_entry.group(), "dirgroup");
 
     Ok(())
 }
@@ -699,12 +699,12 @@ fn test_default_attrs_explicit_override() -> Result<(), Box<dyn std::error::Erro
 
     let entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/usr/bin/myapp"))
+        .find(|e| e.path() == Path::new("/usr/bin/myapp"))
         .expect("file should be present");
 
-    assert_eq!(entry.mode.permissions(), 0o700);
-    assert_eq!(entry.ownership.user, "explicituser");
-    assert_eq!(entry.ownership.group, "explicitgroup");
+    assert_eq!(entry.permissions(), 0o700);
+    assert_eq!(entry.user(), "explicituser");
+    assert_eq!(entry.group(), "explicitgroup");
 
     Ok(())
 }
@@ -727,13 +727,13 @@ fn test_default_attrs_called_twice() -> Result<(), Box<dyn std::error::Error>> {
 
     let entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/usr/bin/myapp"))
+        .find(|e| e.path() == Path::new("/usr/bin/myapp"))
         .expect("file should be present");
 
     // Second call overrode permissions; user/group were None so first call's values persist
-    assert_eq!(entry.mode.permissions(), 0o755);
-    assert_eq!(entry.ownership.user, "user1");
-    assert_eq!(entry.ownership.group, "group1");
+    assert_eq!(entry.permissions(), 0o755);
+    assert_eq!(entry.user(), "user1");
+    assert_eq!(entry.group(), "group1");
 
     Ok(())
 }
@@ -755,11 +755,11 @@ fn test_default_attrs_none_fields() -> Result<(), Box<dyn std::error::Error>> {
 
     let entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/usr/bin/myapp"))
+        .find(|e| e.path() == Path::new("/usr/bin/myapp"))
         .expect("file should be present");
 
-    assert_eq!(entry.ownership.user, "myuser");
-    assert_eq!(entry.ownership.group, "root");
+    assert_eq!(entry.user(), "myuser");
+    assert_eq!(entry.group(), "root");
 
     Ok(())
 }
@@ -783,17 +783,17 @@ fn test_default_attrs_with_dir() -> Result<(), Box<dyn std::error::Error>> {
 
     let dir_entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/usr/lib/mymodule"))
+        .find(|e| e.path() == Path::new("/usr/lib/mymodule"))
         .expect("dir should be present");
-    assert_eq!(dir_entry.mode.permissions(), 0o755);
-    assert_eq!(dir_entry.ownership.user, "diruser");
+    assert_eq!(dir_entry.permissions(), 0o755);
+    assert_eq!(dir_entry.user(), "diruser");
 
     let file_entry = entries
         .iter()
-        .find(|e| e.path == Path::new("/usr/lib/mymodule/hello.py"))
+        .find(|e| e.path() == Path::new("/usr/lib/mymodule/hello.py"))
         .expect("file should be present");
-    assert_eq!(file_entry.mode.permissions(), 0o644);
-    assert_eq!(file_entry.ownership.user, "fileuser");
+    assert_eq!(file_entry.permissions(), 0o644);
+    assert_eq!(file_entry.user(), "fileuser");
 
     Ok(())
 }

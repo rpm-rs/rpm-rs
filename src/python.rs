@@ -181,7 +181,7 @@ impl PyFileMode {
 /// A file checksum (digest) and the algorithm used to compute it.
 #[pyclass(name = "FileDigest", from_py_object)]
 #[derive(Clone)]
-pub struct PyFileDigest(pub(crate) crate::FileDigest);
+pub struct PyFileDigest(pub(crate) crate::FileDigest<'static>);
 
 #[pymethods]
 impl PyFileDigest {
@@ -211,111 +211,92 @@ impl PyFileDigest {
 }
 
 // ---------------------------------------------------------------------------
-// FileOwnership
-// ---------------------------------------------------------------------------
-
-/// The owning user and group of a file entry.
-#[pyclass(name = "FileOwnership", from_py_object)]
-#[derive(Clone)]
-pub struct PyFileOwnership(pub(crate) crate::FileOwnership);
-
-#[pymethods]
-impl PyFileOwnership {
-    fn __repr__(&self) -> String {
-        format!(
-            "FileOwnership(user={:?}, group={:?})",
-            self.0.user, self.0.group
-        )
-    }
-
-    /// The owning user name.
-    #[getter]
-    fn user(&self) -> &str {
-        &self.0.user
-    }
-
-    /// The owning group name.
-    #[getter]
-    fn group(&self) -> &str {
-        &self.0.group
-    }
-}
-
-// ---------------------------------------------------------------------------
 // FileEntry
 // ---------------------------------------------------------------------------
 
 /// A file entry from an RPM package, including path, mode, ownership, and digest.
 #[pyclass(name = "FileEntry", from_py_object)]
 #[derive(Clone)]
-pub struct PyFileEntry(pub(crate) crate::FileEntry);
+pub struct PyFileEntry(pub(crate) crate::FileEntry<'static>);
 
 #[pymethods]
 impl PyFileEntry {
     fn __repr__(&self) -> String {
-        format!("FileEntry({:?})", self.0.path.display().to_string())
+        format!("FileEntry({:?})", self.0.path().display().to_string())
     }
 
     /// The full installation path of this file (e.g. "/usr/bin/foo").
     #[getter]
     fn path(&self) -> String {
-        self.0.path.display().to_string()
+        self.0.path().display().to_string()
+    }
+
+    /// The owning user.
+    #[getter]
+    fn user(&self) -> &str {
+        self.0.user()
+    }
+
+    /// The owning group.
+    #[getter]
+    fn group(&self) -> &str {
+        self.0.group()
     }
 
     /// The file mode (type and permissions).
     #[getter]
     fn mode(&self) -> PyFileMode {
-        PyFileMode(self.0.mode)
+        PyFileMode(self.0.mode())
     }
 
-    /// The owning user and group.
+    /// The permission bits (e.g. 0o755). Includes setuid/setgid/sticky.
     #[getter]
-    fn ownership(&self) -> PyFileOwnership {
-        PyFileOwnership(self.0.ownership.clone())
+    fn permissions(&self) -> u16 {
+        self.0.permissions()
     }
 
     /// Last modified timestamp as seconds since the Unix epoch.
     #[getter]
     fn modified_at(&self) -> u32 {
-        self.0.modified_at.0
+        self.0.modified_at().0
     }
 
     /// The size of the file in bytes.
     /// Note: for directories this is the inode size, not the directory content size.
     #[getter]
     fn size(&self) -> usize {
-        self.0.size
+        self.0.size()
     }
 
     /// File flags as a `FileFlags` IntFlag value (DOC, CONFIG, GHOST, LICENSE, etc.).
     #[getter]
     fn flags(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cls = py.import("rpm_rs")?.getattr("FileFlags")?;
-        Ok(cls.call1((self.0.flags.bits(),))?.into())
+        Ok(cls.call1((self.0.flags().bits(),))?.into())
     }
 
     /// The checksum of this file, or None if not present.
     #[getter]
     fn digest(&self) -> Option<PyFileDigest> {
-        self.0.digest.clone().map(PyFileDigest)
+        self.0.digest().cloned().map(PyFileDigest)
     }
 
     /// POSIX capabilities string for this file, or None.
     #[getter]
-    fn caps(&self) -> Option<String> {
-        self.0.caps.clone()
+    fn caps(&self) -> Option<&str> {
+        self.0.caps()
     }
 
     /// Symlink target path, or None if this is not a symlink.
     #[getter]
     fn linkto(&self) -> Option<&str> {
-        self.0.linkto.as_deref()
+        self.0.linkto()
     }
 
     /// IMA (Integrity Measurement Architecture) signature, or None.
     #[getter]
-    fn ima_signature(&self) -> Option<String> {
-        self.0.ima_signature.clone()
+    fn ima_signature(&self) -> Option<&str> {
+        self.0.ima_signature()
     }
 }
 
@@ -924,7 +905,7 @@ impl PyPackageMetadata {
 
     // --- Files ---
 
-    /// List of all file paths contained in this package, as strings.
+    /// List of all the file paths contained in this package, as strings.
     fn file_paths(&self) -> PyResult<Vec<String>> {
         self.0
             .get_file_paths()
@@ -932,11 +913,41 @@ impl PyPackageMetadata {
             .map_err(to_pyerr)
     }
 
+    /// List all of file paths contained in this package, split into (dirname, basename) tuples
+    /// This can save a significant amount of memory, as it goes through the effort of interning dirnames
+    fn file_paths_split<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<
+        Vec<(
+            Bound<'py, pyo3::types::PyString>,
+            Bound<'py, pyo3::types::PyString>,
+        )>,
+    > {
+        let pairs = self.0.get_file_paths_split().map_err(to_pyerr)?;
+        // Key by data pointer - dirnames sharing the same dirindex already point to
+        // the same slice in the header buffer, so pointer identity is sufficient.
+        // No unsafe required.
+        let mut dir_cache: std::collections::HashMap<*const u8, Bound<'py, pyo3::types::PyString>> =
+            std::collections::HashMap::new();
+        pairs
+            .into_iter()
+            .map(|(dir, base)| {
+                let py_dir = dir_cache
+                    .entry(dir.as_ptr())
+                    .or_insert_with(|| pyo3::types::PyString::new(py, dir))
+                    .clone();
+                let py_base = pyo3::types::PyString::new(py, base);
+                Ok((py_dir, py_base))
+            })
+            .collect()
+    }
+
     /// List of all file entries with full metadata (mode, ownership, digest, etc.).
     fn file_entries(&self) -> PyResult<Vec<PyFileEntry>> {
         self.0
             .get_file_entries()
-            .map(|v| v.into_iter().map(PyFileEntry).collect())
+            .map(|v| v.into_iter().map(|e| PyFileEntry(e.into_owned())).collect())
             .map_err(to_pyerr)
     }
 
@@ -1117,14 +1128,14 @@ impl PyPackageSegmentOffsets {
 
 /// A file from an RPM package payload, including its metadata and content bytes.
 #[pyclass(name = "RpmFile")]
-pub struct PyRpmFile(pub(crate) crate::RpmFile);
+pub struct PyRpmFile(pub(crate) crate::RpmFile<'static>);
 
 #[pymethods]
 impl PyRpmFile {
     fn __repr__(&self) -> String {
         format!(
             "RpmFile({:?}, {} bytes)",
-            self.0.metadata.path.display(),
+            self.0.metadata.path().display(),
             self.0.content.len()
         )
     }
@@ -1226,7 +1237,7 @@ impl PyPackage {
         self.0
             .files()
             .map_err(to_pyerr)?
-            .map(|r| r.map(PyRpmFile).map_err(to_pyerr))
+            .map(|r| r.map(|f| PyRpmFile(f.into_owned())).map_err(to_pyerr))
             .collect()
     }
 
@@ -2667,7 +2678,6 @@ pub fn rpm_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFileType>()?;
     m.add_class::<PyFileMode>()?;
     m.add_class::<PyFileDigest>()?;
-    m.add_class::<PyFileOwnership>()?;
     m.add_class::<PyChangelogEntry>()?;
     m.add_class::<PyScriptlet>()?;
     m.add_class::<PyTrigger>()?;

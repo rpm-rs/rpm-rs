@@ -218,8 +218,8 @@ class TestFiles:
         entries = m.file_entries()
         e = entries[0]
         assert isinstance(e.path, str)
-        assert e.ownership.user is not None
-        assert e.ownership.group is not None
+        assert e.user is not None
+        assert e.group is not None
 
     def test_file_type_enum(self):
         m = PackageMetadata.open(RPM_BASIC)
