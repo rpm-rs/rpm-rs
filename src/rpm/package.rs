@@ -1455,51 +1455,86 @@ impl PackageMetadata {
             Err(e) => return Err(e),
         };
 
-        let paths = self.get_file_paths_split()?;
+        // Inline path resolution to avoid an intermediate Vec<(&str, &str)>.
+        let basenames_result = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_BASENAMES);
+        let biject_result = self
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_DIRINDEXES);
+        let dirs_result = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_DIRNAMES);
 
-        itertools::multizip((
-            paths, users, groups, modes, digests, mtimes, sizes, flags, links,
-        ))
-        .enumerate()
-        .map(
-            |(
-                idx,
-                ((dirname, basename), user, group, mode, digest, mtime, size, flags, linkto),
-            )| {
-                let digest = if digest.is_empty() {
+        if matches!(&basenames_result, Err(Error::TagNotFound(_)))
+            && matches!(&biject_result, Err(Error::TagNotFound(_)))
+            && matches!(&dirs_result, Err(Error::TagNotFound(_)))
+        {
+            return Ok(Vec::new());
+        }
+
+        let basenames = basenames_result?;
+        let biject = biject_result?;
+        let dirs = dirs_result?;
+
+        let n_files = modes.len();
+        if users.len() != n_files
+            || groups.len() != n_files
+            || digests.len() != n_files
+            || mtimes.len() != n_files
+            || sizes.len() != n_files
+            || flags.len() != n_files
+            || links.len() != n_files
+            || basenames.len() != n_files
+            || biject.len() != n_files
+        {
+            return Err(Error::InconsistentTagArrayLengths);
+        }
+
+        let mut result = Vec::with_capacity(n_files);
+        for i in 0..n_files {
+            let dir_index = biject[i] as usize;
+            let dirname = dirs
+                .get(dir_index)
+                .copied()
+                .ok_or_else(|| Error::InvalidTagIndex {
+                    tag: IndexTag::RPMTAG_DIRINDEXES.to_string(),
+                    index: biject[i],
+                    bound: dirs.len() as u32,
+                })?;
+            let digest = if digests[i].is_empty() {
+                None
+            } else {
+                Some(FileDigest::new(algorithm, digests[i])?)
+            };
+            let cap = caps
+                .as_ref()
+                .and_then(|c| c.get(i))
+                .map(|s| Cow::Borrowed(*s));
+            let ima_signature = ima_signatures
+                .as_ref()
+                .and_then(|s| s.get(i))
+                .map(|s| Cow::Borrowed(*s));
+            result.push(FileEntry {
+                dirname: Cow::Borrowed(dirname),
+                basename: Cow::Borrowed(basenames[i]),
+                user: Cow::Borrowed(users[i]),
+                group: Cow::Borrowed(groups[i]),
+                mode: modes[i].into(),
+                modified_at: crate::Timestamp(mtimes[i]),
+                digest,
+                flags: FileFlags::from_bits_retain(flags[i]),
+                size: sizes[i] as usize,
+                caps: cap,
+                linkto: if links[i].is_empty() {
                     None
                 } else {
-                    Some(FileDigest::new(algorithm, digest)?)
-                };
-                let cap = caps
-                    .as_ref()
-                    .and_then(|c| c.get(idx))
-                    .map(|s| Cow::Borrowed(*s));
-                let ima_signature = ima_signatures
-                    .as_ref()
-                    .and_then(|s| s.get(idx))
-                    .map(|s| Cow::Borrowed(*s));
-                Ok(FileEntry {
-                    dirname: Cow::Borrowed(dirname),
-                    basename: Cow::Borrowed(basename),
-                    user: Cow::Borrowed(user),
-                    group: Cow::Borrowed(group),
-                    mode: mode.into(),
-                    modified_at: crate::Timestamp(mtime),
-                    digest,
-                    flags: FileFlags::from_bits_retain(flags),
-                    size: size as usize,
-                    caps: cap,
-                    linkto: if linkto.is_empty() {
-                        None
-                    } else {
-                        Some(Cow::Borrowed(linkto))
-                    },
-                    ima_signature,
-                })
-            },
-        )
-        .collect()
+                    Some(Cow::Borrowed(links[i]))
+                },
+                ima_signature,
+            });
+        }
+        Ok(result)
     }
 
     /// Invoke a callback for each file entry in the RPM, without collecting them all into memory.
@@ -1586,42 +1621,80 @@ impl PackageMetadata {
             Err(e) => return Err(e),
         };
 
-        let paths = self.get_file_paths_split()?;
+        // Inline path resolution to avoid an intermediate Vec<(&str, &str)>.
+        let basenames_result = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_BASENAMES);
+        let biject_result = self
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_DIRINDEXES);
+        let dirs_result = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_DIRNAMES);
 
-        for (idx, ((dirname, basename), user, group, mode, digest, mtime, size, flags, linkto)) in
-            itertools::multizip((
-                paths, users, groups, modes, digests, mtimes, sizes, flags, links,
-            ))
-            .enumerate()
+        if matches!(&basenames_result, Err(Error::TagNotFound(_)))
+            && matches!(&biject_result, Err(Error::TagNotFound(_)))
+            && matches!(&dirs_result, Err(Error::TagNotFound(_)))
         {
-            let digest = if digest.is_empty() {
+            return Ok(());
+        }
+
+        let basenames = basenames_result?;
+        let biject = biject_result?;
+        let dirs = dirs_result?;
+
+        let n_files = modes.len();
+        if users.len() != n_files
+            || groups.len() != n_files
+            || digests.len() != n_files
+            || mtimes.len() != n_files
+            || sizes.len() != n_files
+            || flags.len() != n_files
+            || links.len() != n_files
+            || basenames.len() != n_files
+            || biject.len() != n_files
+        {
+            return Err(Error::InconsistentTagArrayLengths);
+        }
+
+        for i in 0..n_files {
+            let dir_index = biject[i] as usize;
+            let dirname = dirs
+                .get(dir_index)
+                .copied()
+                .ok_or_else(|| Error::InvalidTagIndex {
+                    tag: IndexTag::RPMTAG_DIRINDEXES.to_string(),
+                    index: biject[i],
+                    bound: dirs.len() as u32,
+                })?;
+            let digest = if digests[i].is_empty() {
                 None
             } else {
-                Some(FileDigest::new(algorithm, digest)?)
+                Some(FileDigest::new(algorithm, digests[i])?)
             };
             let cap = caps
                 .as_ref()
-                .and_then(|c| c.get(idx))
+                .and_then(|c| c.get(i))
                 .map(|s| Cow::Borrowed(*s));
             let ima_signature = ima_signatures
                 .as_ref()
-                .and_then(|s| s.get(idx))
+                .and_then(|s| s.get(i))
                 .map(|s| Cow::Borrowed(*s));
             f(FileEntry {
                 dirname: Cow::Borrowed(dirname),
-                basename: Cow::Borrowed(basename),
-                user: Cow::Borrowed(user),
-                group: Cow::Borrowed(group),
-                mode: mode.into(),
-                modified_at: crate::Timestamp(mtime),
+                basename: Cow::Borrowed(basenames[i]),
+                user: Cow::Borrowed(users[i]),
+                group: Cow::Borrowed(groups[i]),
+                mode: modes[i].into(),
+                modified_at: crate::Timestamp(mtimes[i]),
                 digest,
-                flags: FileFlags::from_bits_retain(flags),
-                size: size as usize,
+                flags: FileFlags::from_bits_retain(flags[i]),
+                size: sizes[i] as usize,
                 caps: cap,
-                linkto: if linkto.is_empty() {
+                linkto: if links[i].is_empty() {
                     None
                 } else {
-                    Some(Cow::Borrowed(linkto))
+                    Some(Cow::Borrowed(links[i]))
                 },
                 ima_signature,
             })?;

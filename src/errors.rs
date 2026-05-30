@@ -47,6 +47,9 @@ pub enum Error {
     #[error("invalid tag array index {tag} with {index} while bounded at {bound}")]
     InvalidTagIndex { tag: String, index: u32, bound: u32 },
 
+    #[error("related tag arrays have inconsistent lengths")]
+    InconsistentTagArrayLengths,
+
     #[error("invalid tag value enum variant for {tag} with {variant}")]
     InvalidTagValueEnumVariant { tag: String, variant: u32 },
 
