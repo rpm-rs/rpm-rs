@@ -1312,6 +1312,58 @@ impl PackageMetadata {
             .collect()
     }
 
+    /// Extract the set of contained file (directory, basename) pairs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let package = rpm::Package::open("tests/assets/RPMS/v4/rpm-basic-2.3.4-5.el9.noarch.rpm")?;
+    /// for path in package.metadata.get_file_paths()? {
+    ///     println!("{}", path.display());
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub fn get_file_paths_split(&self) -> Result<Vec<(&str, &str)>, Error> {
+        // reconstruct the messy de-constructed paths
+        let basenames = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_BASENAMES);
+        let biject = self
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_DIRINDEXES);
+        let dirs = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_DIRNAMES);
+
+        if matches!(&basenames, Err(Error::TagNotFound(_)))
+            && matches!(&biject, Err(Error::TagNotFound(_)))
+            && matches!(&dirs, Err(Error::TagNotFound(_)))
+        {
+            return Ok(Vec::new());
+        }
+
+        let basenames = basenames?;
+        let biject = biject?;
+        let dirs = dirs?;
+
+        basenames
+            .iter()
+            .zip(biject)
+            .map(|(basename, dir_index)| {
+                if let Some(&dir) = dirs.get(dir_index as usize) {
+                    Ok((dir, *basename))
+                } else {
+                    Err(Error::InvalidTagIndex {
+                        tag: IndexTag::RPMTAG_DIRINDEXES.to_string(),
+                        index: dir_index,
+                        bound: dirs.len() as u32,
+                    })
+                }
+            })
+            .collect()
+    }
+
     /// The digest algorithm used per file.
     ///
     /// Note that this is not necessarily the same as the digest used for headers.
@@ -1338,7 +1390,7 @@ impl PackageMetadata {
     /// }
     /// # Ok(()) }
     /// ```
-    pub fn get_file_entries(&self) -> Result<Vec<FileEntry>, Error> {
+    pub fn get_file_entries(&self) -> Result<Vec<FileEntry<'_>>, Error> {
         // rpm does not encode it, if it is the default md5
         let algorithm = self
             .get_file_digest_algorithm()
@@ -1403,14 +1455,17 @@ impl PackageMetadata {
             Err(e) => return Err(e),
         };
 
-        let paths = self.get_file_paths()?;
+        let paths = self.get_file_paths_split()?;
 
         itertools::multizip((
             paths, users, groups, modes, digests, mtimes, sizes, flags, links,
         ))
         .enumerate()
         .map(
-            |(idx, (path, user, group, mode, digest, mtime, size, flags, linkto))| {
+            |(
+                idx,
+                ((dirname, basename), user, group, mode, digest, mtime, size, flags, linkto),
+            )| {
                 let digest = if digest.is_empty() {
                     None
                 } else {
@@ -1419,17 +1474,16 @@ impl PackageMetadata {
                 let cap = caps
                     .as_ref()
                     .and_then(|c| c.get(idx))
-                    .map(|s| (*s).to_owned());
+                    .map(|s| Cow::Borrowed(*s));
                 let ima_signature = ima_signatures
                     .as_ref()
                     .and_then(|s| s.get(idx))
-                    .map(|s| (*s).to_owned());
+                    .map(|s| Cow::Borrowed(*s));
                 Ok(FileEntry {
-                    path,
-                    ownership: FileOwnership {
-                        user: user.to_owned(),
-                        group: group.to_owned(),
-                    },
+                    dirname: Cow::Borrowed(dirname),
+                    basename: Cow::Borrowed(basename),
+                    user: Cow::Borrowed(user),
+                    group: Cow::Borrowed(group),
                     mode: mode.into(),
                     modified_at: crate::Timestamp(mtime),
                     digest,
@@ -1439,13 +1493,141 @@ impl PackageMetadata {
                     linkto: if linkto.is_empty() {
                         None
                     } else {
-                        Some(linkto.to_owned())
+                        Some(Cow::Borrowed(linkto))
                     },
                     ima_signature,
                 })
             },
         )
         .collect()
+    }
+
+    /// Invoke a callback for each file entry in the RPM, without collecting them all into memory.
+    ///
+    /// This is useful when processing large packages where allocating a `Vec` of all entries
+    /// at once is undesirable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let package = rpm::Package::open("tests/assets/RPMS/v4/rpm-basic-2.3.4-5.el9.noarch.rpm")?;
+    /// package.metadata.for_each_file_entry(|entry| {
+    ///     println!("{} is {} bytes", entry.path().display(), entry.size());
+    ///     Ok(())
+    /// })?;
+    /// # Ok(()) }
+    /// ```
+    pub fn for_each_file_entry(
+        &self,
+        mut f: impl FnMut(FileEntry<'_>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        // rpm does not encode it, if it is the default md5
+        let algorithm = self
+            .get_file_digest_algorithm()
+            .unwrap_or(DigestAlgorithm::Md5);
+
+        let modes = match self
+            .header
+            .get_entry_data_as_u16_array(IndexTag::RPMTAG_FILEMODES)
+        {
+            Ok(modes) => modes,
+            Err(Error::TagNotFound(_)) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+
+        let users = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEUSERNAME)?;
+        let groups = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEGROUPNAME)?;
+        let digests = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEDIGESTS)?;
+        let mtimes = self
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEMTIMES)?;
+        let sizes = self
+            .header
+            .get_entry_data_as_u64_array(IndexTag::RPMTAG_LONGFILESIZES)
+            .or_else(|_e| {
+                self.header
+                    .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILESIZES)
+                    .map(|file_sizes| {
+                        file_sizes
+                            .into_iter()
+                            .map(|file_size| file_size as _)
+                            .collect::<Vec<u64>>()
+                    })
+            })?;
+        let flags = self
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEFLAGS)?;
+        let links = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILELINKTOS)?;
+
+        // Optional tags — not present in all packages
+        let caps = match self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILECAPS)
+        {
+            Ok(caps) => Some(caps),
+            Err(Error::TagNotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
+        let ima_signatures = match self
+            .signature
+            .get_entry_data_as_string_array(IndexSignatureTag::RPMSIGTAG_FILESIGNATURES)
+        {
+            Ok(ima_signatures) => Some(ima_signatures),
+            Err(Error::TagNotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
+
+        let paths = self.get_file_paths_split()?;
+
+        for (idx, ((dirname, basename), user, group, mode, digest, mtime, size, flags, linkto)) in
+            itertools::multizip((
+                paths, users, groups, modes, digests, mtimes, sizes, flags, links,
+            ))
+            .enumerate()
+        {
+            let digest = if digest.is_empty() {
+                None
+            } else {
+                Some(FileDigest::new(algorithm, digest)?)
+            };
+            let cap = caps
+                .as_ref()
+                .and_then(|c| c.get(idx))
+                .map(|s| Cow::Borrowed(*s));
+            let ima_signature = ima_signatures
+                .as_ref()
+                .and_then(|s| s.get(idx))
+                .map(|s| Cow::Borrowed(*s));
+            f(FileEntry {
+                dirname: Cow::Borrowed(dirname),
+                basename: Cow::Borrowed(basename),
+                user: Cow::Borrowed(user),
+                group: Cow::Borrowed(group),
+                mode: mode.into(),
+                modified_at: crate::Timestamp(mtime),
+                digest,
+                flags: FileFlags::from_bits_retain(flags),
+                size: size as usize,
+                caps: cap,
+                linkto: if linkto.is_empty() {
+                    None
+                } else {
+                    Some(Cow::Borrowed(linkto))
+                },
+                ima_signature,
+            })?;
+        }
+
+        Ok(())
     }
 
     /// Return a list of changelog entries
