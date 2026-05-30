@@ -127,9 +127,10 @@ impl Package {
             if entry_reader.is_trailer() {
                 return Ok(());
             }
+            let entry_path = file_entry.path();
             let file_path = dest
                 .as_ref()
-                .join(file_entry.path.strip_prefix("/").unwrap_or(dest.as_ref()));
+                .join(entry_path.strip_prefix("/").unwrap_or(dest.as_ref()));
             match file_entry.file_type() {
                 FileType::Dir => {
                     fs::create_dir_all(&file_path)?;
@@ -153,7 +154,7 @@ impl Package {
                     if file_path.exists() || file_path.symlink_metadata().is_ok() {
                         fs::remove_file(&file_path)?;
                     }
-                    symlink(file_entry.linkto.as_deref().unwrap_or(""), &file_path)?;
+                    symlink(file_entry.linkto().unwrap_or(""), &file_path)?;
                 }
                 // Skip file types we don't handle (e.g. device nodes, FIFOs, sockets)
                 _ => {}
@@ -166,19 +167,28 @@ impl Package {
 }
 
 pub struct FileIterator<'a> {
-    file_entries: Vec<FileEntry>,
+    file_entries: Vec<FileEntry<'a>>,
     archive: Box<dyn io::Read + 'a>,
     count: usize,
 }
 
 #[derive(Debug)]
-pub struct RpmFile {
-    pub metadata: FileEntry,
+pub struct RpmFile<'a> {
+    pub metadata: FileEntry<'a>,
     pub content: Vec<u8>,
 }
 
-impl Iterator for FileIterator<'_> {
-    type Item = Result<RpmFile, Error>;
+impl<'a> RpmFile<'a> {
+    pub fn into_owned(self) -> RpmFile<'static> {
+        RpmFile {
+            metadata: self.metadata.into_owned(),
+            content: self.content,
+        }
+    }
+}
+
+impl<'a> Iterator for FileIterator<'a> {
+    type Item = Result<RpmFile<'a>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.count >= self.file_entries.len() {

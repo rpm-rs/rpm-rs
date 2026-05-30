@@ -181,7 +181,7 @@ impl PyFileMode {
 /// A file checksum (digest) and the algorithm used to compute it.
 #[pyclass(name = "FileDigest", from_py_object)]
 #[derive(Clone)]
-pub struct PyFileDigest(pub(crate) crate::FileDigest);
+pub struct PyFileDigest(pub(crate) crate::FileDigest<'static>);
 
 #[pymethods]
 impl PyFileDigest {
@@ -217,7 +217,7 @@ impl PyFileDigest {
 /// A file entry from an RPM package, including path, mode, ownership, and digest.
 #[pyclass(name = "FileEntry", from_py_object)]
 #[derive(Clone)]
-pub struct PyFileEntry(pub(crate) crate::FileEntry);
+pub struct PyFileEntry(pub(crate) crate::FileEntry<'static>);
 
 #[pymethods]
 impl PyFileEntry {
@@ -905,7 +905,7 @@ impl PyPackageMetadata {
 
     // --- Files ---
 
-    /// List of all file paths contained in this package, as strings.
+    /// List of all the file paths contained in this package, as strings.
     fn file_paths(&self) -> PyResult<Vec<String>> {
         self.0
             .get_file_paths()
@@ -913,11 +913,41 @@ impl PyPackageMetadata {
             .map_err(to_pyerr)
     }
 
+    /// List all of file paths contained in this package, split into (dirname, basename) tuples
+    /// This can save a significant amount of memory, as it goes through the effort of interning dirnames
+    fn file_paths_split<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<
+        Vec<(
+            Bound<'py, pyo3::types::PyString>,
+            Bound<'py, pyo3::types::PyString>,
+        )>,
+    > {
+        let pairs = self.0.get_file_paths_split().map_err(to_pyerr)?;
+        // Key by data pointer - dirnames sharing the same dirindex already point to
+        // the same slice in the header buffer, so pointer identity is sufficient.
+        // No unsafe required.
+        let mut dir_cache: std::collections::HashMap<*const u8, Bound<'py, pyo3::types::PyString>> =
+            std::collections::HashMap::new();
+        pairs
+            .into_iter()
+            .map(|(dir, base)| {
+                let py_dir = dir_cache
+                    .entry(dir.as_ptr())
+                    .or_insert_with(|| pyo3::types::PyString::new(py, dir))
+                    .clone();
+                let py_base = pyo3::types::PyString::new(py, base);
+                Ok((py_dir, py_base))
+            })
+            .collect()
+    }
+
     /// List of all file entries with full metadata (mode, ownership, digest, etc.).
     fn file_entries(&self) -> PyResult<Vec<PyFileEntry>> {
         self.0
             .get_file_entries()
-            .map(|v| v.into_iter().map(PyFileEntry).collect())
+            .map(|v| v.into_iter().map(|e| PyFileEntry(e.into_owned())).collect())
             .map_err(to_pyerr)
     }
 
@@ -1098,14 +1128,14 @@ impl PyPackageSegmentOffsets {
 
 /// A file from an RPM package payload, including its metadata and content bytes.
 #[pyclass(name = "RpmFile")]
-pub struct PyRpmFile(pub(crate) crate::RpmFile);
+pub struct PyRpmFile(pub(crate) crate::RpmFile<'static>);
 
 #[pymethods]
 impl PyRpmFile {
     fn __repr__(&self) -> String {
         format!(
             "RpmFile({:?}, {} bytes)",
-            self.0.metadata.path.display(),
+            self.0.metadata.path().display(),
             self.0.content.len()
         )
     }
@@ -1207,7 +1237,7 @@ impl PyPackage {
         self.0
             .files()
             .map_err(to_pyerr)?
-            .map(|r| r.map(PyRpmFile).map_err(to_pyerr))
+            .map(|r| r.map(|f| PyRpmFile(f.into_owned())).map_err(to_pyerr))
             .collect()
     }
 

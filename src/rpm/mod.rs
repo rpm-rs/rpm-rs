@@ -42,7 +42,7 @@ mod test_payload_integration {
     use crate::*;
     use pretty_assertions::assert_eq;
     use sha2::{Digest, Sha256};
-    use std::path::PathBuf;
+    use std::borrow::Cow;
 
     /// SOURCE_DATE_EPOCH used for building fixture packages (from build_packages.sh)
     /// This timestamp is April 9, 2023 19:29:19 UTC
@@ -137,17 +137,16 @@ mod test_payload_integration {
         assert_eq!(
             files[0].metadata,
             FileEntry {
-                path: PathBuf::from("/etc/rpm-basic/example_config.toml"),
+                dirname: Cow::from("/etc/rpm-basic/"),
+                basename: Cow::from("example_config.toml"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned()
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[0].content.len(),
                 flags: FileFlags::CONFIG,
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[0].content),
+                    digest: Cow::from(calculate_sha256(&files[0].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -161,17 +160,16 @@ mod test_payload_integration {
         assert_eq!(
             files[1].metadata,
             FileEntry {
-                path: PathBuf::from("/usr/bin/rpm-basic"),
+                dirname: Cow::from("/usr/bin/"),
+                basename: Cow::from("rpm-basic"),
                 mode: FileMode::regular(0o0644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned()
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[1].content.len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[1].content),
+                    digest: Cow::from(calculate_sha256(&files[1].content)),
                     algo: DigestAlgorithm::Sha2_256
                 }),
                 caps: None,
@@ -184,12 +182,11 @@ mod test_payload_integration {
         assert_eq!(
             files[2].metadata,
             FileEntry {
-                path: PathBuf::from("/usr/lib/rpm-basic"),
+                dirname: Cow::from("/usr/lib/"),
+                basename: Cow::from("rpm-basic"),
                 mode: FileMode::dir(0o0755),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned()
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[2].content.len(),
                 flags: FileFlags::empty(),
@@ -204,12 +201,11 @@ mod test_payload_integration {
         assert_eq!(
             files[3].metadata,
             FileEntry {
-                path: PathBuf::from("/usr/lib/rpm-basic/module"),
+                dirname: Cow::from("/usr/lib/rpm-basic/"),
+                basename: Cow::from("module"),
                 mode: FileMode::dir(0o0755),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned()
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[3].content.len(),
                 flags: FileFlags::empty(),
@@ -225,17 +221,16 @@ mod test_payload_integration {
         assert_eq!(
             files[4].metadata,
             FileEntry {
-                path: PathBuf::from("/usr/lib/rpm-basic/module/__init__.py"),
+                dirname: Cow::from("/usr/lib/rpm-basic/module/"),
+                basename: Cow::from("__init__.py"),
                 mode: FileMode::regular(0o0644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned()
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[4].content.len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[4].content),
+                    digest: Cow::from(calculate_sha256(&files[4].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -249,17 +244,16 @@ mod test_payload_integration {
         assert_eq!(
             files[5].metadata,
             FileEntry {
-                path: PathBuf::from("/usr/lib/rpm-basic/module/hello.py"),
+                dirname: Cow::from("/usr/lib/rpm-basic/module/"),
+                basename: Cow::from("hello.py"),
                 mode: FileMode::regular(0o0644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned()
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[5].content.len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[5].content),
+                    digest: Cow::from(calculate_sha256(&files[5].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -272,12 +266,11 @@ mod test_payload_integration {
         assert_eq!(
             files[6].metadata,
             FileEntry {
-                path: PathBuf::from("/usr/share/doc/rpm-basic"),
+                dirname: Cow::from("/usr/share/doc/"),
+                basename: Cow::from("rpm-basic"),
                 mode: FileMode::dir(0o755),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned()
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[6].content.len(),
                 flags: FileFlags::empty(),
@@ -294,17 +287,16 @@ mod test_payload_integration {
         assert_eq!(
             files[7].metadata,
             FileEntry {
-                path: PathBuf::from("/usr/share/doc/rpm-basic/README"),
+                dirname: Cow::from("/usr/share/doc/rpm-basic/"),
+                basename: Cow::from("README"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned()
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[7].content.len(),
                 flags: FileFlags::DOC,
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[7].content),
+                    digest: Cow::from(calculate_sha256(&files[7].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -318,17 +310,16 @@ mod test_payload_integration {
         assert_eq!(
             files[8].metadata,
             FileEntry {
-                path: PathBuf::from("/usr/share/rpm-basic/example_data.xml"),
+                dirname: Cow::from("/usr/share/rpm-basic/"),
+                basename: Cow::from("example_data.xml"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned()
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[8].content.len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[8].content),
+                    digest: Cow::from(calculate_sha256(&files[8].content)),
                     algo: DigestAlgorithm::Sha2_256
                 }),
                 caps: None,
@@ -341,12 +332,11 @@ mod test_payload_integration {
         assert_eq!(
             files[9].metadata,
             FileEntry {
-                path: PathBuf::from("/var/log/rpm-basic/basic.log"),
+                dirname: Cow::from("/var/log/rpm-basic/"),
+                basename: Cow::from("basic.log"),
                 mode: FileMode::regular(0),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned()
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[9].content.len(),
                 flags: FileFlags::GHOST,
@@ -361,12 +351,11 @@ mod test_payload_integration {
         assert_eq!(
             files[10].metadata,
             FileEntry {
-                path: PathBuf::from("/var/tmp/rpm-basic"),
+                dirname: Cow::from("/var/tmp/"),
+                basename: Cow::from("rpm-basic"),
                 mode: FileMode::dir(0o0755),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned()
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[10].content.len(),
                 flags: FileFlags::empty(),
@@ -387,19 +376,15 @@ mod test_payload_integration {
         files: &[RpmFile],
     ) -> Result<(), Box<dyn std::error::Error>> {
         for file in files {
-            let file_path = extract_path.join(
-                file.metadata
-                    .path
-                    .strip_prefix("/")
-                    .unwrap_or(&file.metadata.path),
-            );
+            let entry_path = file.metadata.path();
+            let file_path = extract_path.join(entry_path.strip_prefix("/").unwrap_or(&entry_path));
 
-            if file.metadata.flags.contains(FileFlags::GHOST) {
+            if file.metadata.flags().contains(FileFlags::GHOST) {
                 // Ghost files should NOT be created during extraction
                 assert!(
                     !file_path.exists(),
                     "Ghost file {:?} should NOT exist on disk",
-                    file.metadata.path
+                    entry_path
                 );
             } else {
                 match file.metadata.file_type() {
@@ -407,20 +392,20 @@ mod test_payload_integration {
                         assert!(
                             file_path.exists() && file_path.is_dir(),
                             "Directory {:?} should exist",
-                            file.metadata.path
+                            entry_path
                         );
                     }
                     FileType::Regular => {
                         assert!(
                             file_path.exists() && file_path.is_file(),
                             "Regular file {:?} should exist",
-                            file.metadata.path
+                            entry_path
                         );
                         let disk_content = std::fs::read(&file_path)?;
                         assert_eq!(
                             disk_content, file.content,
                             "Content mismatch for {:?}",
-                            file.metadata.path
+                            entry_path
                         );
                     }
                     FileType::SymbolicLink => {
@@ -430,13 +415,13 @@ mod test_payload_integration {
                             assert!(
                                 file_path.exists() || file_path.symlink_metadata().is_ok(),
                                 "Symlink {:?} should exist",
-                                file.metadata.path
+                                entry_path
                             );
                             let metadata = file_path.symlink_metadata()?;
                             assert!(
                                 metadata.file_type().is_symlink(),
                                 "Path {:?} should be a symlink",
-                                file.metadata.path
+                                entry_path
                             );
                         }
                         // On Windows, symlinks are only created if their target exists.
@@ -457,7 +442,7 @@ mod test_payload_integration {
     #[track_caller]
     fn assert_file_apis_consistent(
         package: &Package,
-    ) -> Result<Vec<RpmFile>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<RpmFile<'_>>, Box<dyn std::error::Error>> {
         let files: Vec<RpmFile> = package.files()?.collect::<Result<Vec<_>, _>>()?;
         let metadata_entries = package.metadata.get_file_entries()?;
         let file_paths = package.metadata.get_file_paths()?;
@@ -530,17 +515,16 @@ mod test_payload_integration {
         assert_eq!(
             files[0].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs"),
+                dirname: Cow::from("/opt/"),
+                basename: Cow::from("rpm-file-attrs"),
                 mode: FileMode::dir(0o755),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[0].content.len(),
                 flags: FileFlags::empty(),
                 digest: None,
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -551,20 +535,19 @@ mod test_payload_integration {
         assert_eq!(
             files[1].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/artifact"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("artifact"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[1].content.len(),
                 flags: FileFlags::ARTIFACT,
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[1].content),
+                    digest: Cow::from(calculate_sha256(&files[1].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -575,20 +558,19 @@ mod test_payload_integration {
         assert_eq!(
             files[2].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/config"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("config"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[2].content.len(),
                 flags: FileFlags::CONFIG,
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[2].content),
+                    digest: Cow::from(calculate_sha256(&files[2].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -599,20 +581,19 @@ mod test_payload_integration {
         assert_eq!(
             files[3].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/config_noreplace"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("config_noreplace"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[3].content.len(),
                 flags: FileFlags::CONFIG | FileFlags::NOREPLACE,
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[3].content),
+                    digest: Cow::from(calculate_sha256(&files[3].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -623,20 +604,19 @@ mod test_payload_integration {
         assert_eq!(
             files[4].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/different-owner-and-group"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("different-owner-and-group"),
                 mode: FileMode::regular(0o655),
-                ownership: FileOwnership {
-                    user: "jane".to_owned(),
-                    group: "bob".to_owned(),
-                },
+                user: Cow::from("jane"),
+                group: Cow::from("bob"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[4].content.len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[4].content),
+                    digest: Cow::from(calculate_sha256(&files[4].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -646,17 +626,16 @@ mod test_payload_integration {
         assert_eq!(
             files[5].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/dir"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("dir"),
                 mode: FileMode::dir(0o755),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[5].content.len(),
                 flags: FileFlags::empty(),
                 digest: None,
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -667,20 +646,19 @@ mod test_payload_integration {
         assert_eq!(
             files[6].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/dir/normal"),
+                dirname: Cow::from("/opt/rpm-file-attrs/dir/"),
+                basename: Cow::from("normal"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[6].content.len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[6].content),
+                    digest: Cow::from(calculate_sha256(&files[6].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -691,20 +669,19 @@ mod test_payload_integration {
         assert_eq!(
             files[7].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/doc"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("doc"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 4,
                 flags: FileFlags::DOC,
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[7].content),
+                    digest: Cow::from(calculate_sha256(&files[7].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -714,20 +691,19 @@ mod test_payload_integration {
         assert_eq!(
             files[8].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/empty_caps"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("empty_caps"),
                 mode: FileMode::regular(0o655),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 11,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[8].content),
+                    digest: Cow::from(calculate_sha256(&files[8].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("=".to_owned()),
+                caps: Some(Cow::from("=")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -737,20 +713,19 @@ mod test_payload_integration {
         assert_eq!(
             files[9].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/empty_caps2"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("empty_caps2"),
                 mode: FileMode::regular(0o655),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 12,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[9].content),
+                    digest: Cow::from(calculate_sha256(&files[9].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("=".to_owned()),
+                caps: Some(Cow::from("=")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -760,20 +735,19 @@ mod test_payload_integration {
         assert_eq!(
             files[10].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/example-binary"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("example-binary"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 15,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[10].content),
+                    digest: Cow::from(calculate_sha256(&files[10].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -783,20 +757,19 @@ mod test_payload_integration {
         assert_eq!(
             files[11].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/example-confidential-file"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("example-confidential-file"),
                 mode: FileMode::regular(0o600),
-                ownership: FileOwnership {
-                    user: "jane".to_owned(),
-                    group: "jane".to_owned(),
-                },
+                user: Cow::from("jane"),
+                group: Cow::from("jane"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 26,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[11].content),
+                    digest: Cow::from(calculate_sha256(&files[11].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -805,17 +778,16 @@ mod test_payload_integration {
         assert_eq!(
             files[12].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/ghost"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("ghost"),
                 mode: FileMode::regular(0),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 0,
                 flags: FileFlags::GHOST,
                 digest: None,
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -827,20 +799,19 @@ mod test_payload_integration {
         assert_eq!(
             files[13].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/license"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("license"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 8,
                 flags: FileFlags::LICENSE,
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[13].content),
+                    digest: Cow::from(calculate_sha256(&files[13].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -850,20 +821,19 @@ mod test_payload_integration {
         assert_eq!(
             files[14].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/missingok"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("missingok"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 10,
                 flags: FileFlags::MISSINGOK,
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[14].content),
+                    digest: Cow::from(calculate_sha256(&files[14].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -873,20 +843,19 @@ mod test_payload_integration {
         assert_eq!(
             files[15].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/normal"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("normal"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 7,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[15].content),
+                    digest: Cow::from(calculate_sha256(&files[15].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -896,20 +865,19 @@ mod test_payload_integration {
         assert_eq!(
             files[16].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/readme"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("readme"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 7,
                 flags: FileFlags::README,
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[16].content),
+                    digest: Cow::from(calculate_sha256(&files[16].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -919,18 +887,17 @@ mod test_payload_integration {
         assert_eq!(
             files[17].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/symlink"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("symlink"),
                 mode: FileMode::symbolic_link(0o777),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 6,
                 flags: FileFlags::empty(),
                 digest: None,
-                caps: Some("".to_owned()),
-                linkto: Some("normal".to_owned()),
+                caps: Some(Cow::from("")),
+                linkto: Some(Cow::from("normal")),
                 ima_signature: None,
             }
         );
@@ -942,17 +909,16 @@ mod test_payload_integration {
         assert_eq!(
             files[18].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/symlink_dir"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("symlink_dir"),
                 mode: FileMode::dir(0o755),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 0,
                 flags: FileFlags::empty(),
                 digest: None,
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -964,18 +930,17 @@ mod test_payload_integration {
         assert_eq!(
             files[19].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/symlink_dir/dir"),
+                dirname: Cow::from("/opt/rpm-file-attrs/symlink_dir/"),
+                basename: Cow::from("dir"),
                 mode: FileMode::symbolic_link(0o777),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 6,
                 flags: FileFlags::empty(),
                 digest: None,
-                caps: Some("".to_owned()),
-                linkto: Some("../dir".to_owned()),
+                caps: Some(Cow::from("")),
+                linkto: Some(Cow::from("../dir")),
                 ima_signature: None,
             }
         );
@@ -988,20 +953,19 @@ mod test_payload_integration {
         assert_eq!(
             files[20].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/verify_all"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("verify_all"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 11,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[20].content),
+                    digest: Cow::from(calculate_sha256(&files[20].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -1011,20 +975,19 @@ mod test_payload_integration {
         assert_eq!(
             files[21].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/verify_none"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("verify_none"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 12,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[21].content),
+                    digest: Cow::from(calculate_sha256(&files[21].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -1034,20 +997,19 @@ mod test_payload_integration {
         assert_eq!(
             files[22].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/verify_not"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("verify_not"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 11,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[22].content),
+                    digest: Cow::from(calculate_sha256(&files[22].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -1057,20 +1019,19 @@ mod test_payload_integration {
         assert_eq!(
             files[23].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/verify_some"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("verify_some"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 12,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[23].content),
+                    digest: Cow::from(calculate_sha256(&files[23].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -1080,20 +1041,19 @@ mod test_payload_integration {
         assert_eq!(
             files[24].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-attrs/with_caps"),
+                dirname: Cow::from("/opt/rpm-file-attrs/"),
+                basename: Cow::from("with_caps"),
                 mode: FileMode::regular(0o655),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 10,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[24].content),
+                    digest: Cow::from(calculate_sha256(&files[24].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("cap_sys_ptrace,cap_sys_admin=ep".to_owned()),
+                caps: Some(Cow::from("cap_sys_ptrace,cap_sys_admin=ep")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -1108,20 +1068,19 @@ mod test_payload_integration {
         assert_eq!(
             files[25].metadata,
             FileEntry {
-                path: PathBuf::from("/usr/lib/sysusers.d/rpm-file-attrs.conf"),
+                dirname: Cow::from("/usr/lib/sysusers.d/"),
+                basename: Cow::from("rpm-file-attrs.conf"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: expected_sysusers.len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[25].content),
+                    digest: Cow::from(calculate_sha256(&files[25].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
-                caps: Some("".to_owned()),
+                caps: Some(Cow::from("")),
                 linkto: None,
                 ima_signature: None,
             }
@@ -1163,17 +1122,16 @@ mod test_payload_integration {
         assert_eq!(
             files[0].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-types/empty_file"),
+                dirname: Cow::from("/opt/rpm-file-types/"),
+                basename: Cow::from("empty_file"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[0].content),
+                    digest: Cow::from(calculate_sha256(&files[0].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -1189,17 +1147,16 @@ mod test_payload_integration {
         assert_eq!(
             files[1].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-types/file with spaces & special (chars).txt"),
+                dirname: Cow::from("/opt/rpm-file-types/"),
+                basename: Cow::from("file with spaces & special (chars).txt"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 31,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[1].content),
+                    digest: Cow::from(calculate_sha256(&files[1].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -1216,17 +1173,16 @@ mod test_payload_integration {
         assert_eq!(
             files[2].metadata,
             FileEntry {
-                path: PathBuf::from("/opt/rpm-file-types/rpm-rs-logo.png"),
+                dirname: Cow::from("/opt/rpm-file-types/"),
+                basename: Cow::from("rpm-rs-logo.png"),
                 mode: FileMode::regular(0o644),
-                ownership: FileOwnership {
-                    user: "root".to_owned(),
-                    group: "root".to_owned(),
-                },
+                user: Cow::from("root"),
+                group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 2017,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: calculate_sha256(&files[2].content),
+                    digest: Cow::from(calculate_sha256(&files[2].content)),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -1274,17 +1230,16 @@ mod test_payload_integration {
             assert_eq!(
                 files[0].metadata,
                 FileEntry {
-                    path: PathBuf::from("rpm-empty.spec"),
+                    dirname: Cow::from(""),
+                    basename: Cow::from("rpm-empty.spec"),
                     mode: FileMode::regular(0o644),
-                    ownership: FileOwnership {
-                        user: "root".to_owned(),
-                        group: "root".to_owned()
-                    },
+                    user: Cow::from("root"),
+                    group: Cow::from("root"),
                     modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                     size: 162,
                     flags: FileFlags::SPECFILE,
                     digest: Some(FileDigest {
-                        digest: calculate_sha256(&files[0].content),
+                        digest: Cow::from(calculate_sha256(&files[0].content)),
                         algo: DigestAlgorithm::Sha2_256,
                     }),
                     caps: None,

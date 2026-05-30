@@ -3,6 +3,7 @@ use nom::{
     number::complete::{be_i32, be_u8, be_u16, be_u32, be_u64},
 };
 use std::{
+    borrow::Cow,
     fmt::{self, Display},
     io,
     marker::PhantomData,
@@ -604,15 +605,15 @@ pub struct FileOwnership {
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct FileDigest {
-    pub digest: String,
-    pub algo: DigestAlgorithm,
+pub struct FileDigest<'a> {
+    pub(crate) digest: Cow<'a, str>,
+    pub(crate) algo: DigestAlgorithm,
 }
 
-impl FileDigest {
+impl<'a> FileDigest<'a> {
     pub(crate) fn new(
         algorithm: DigestAlgorithm,
-        hex_digest: impl Into<String>,
+        hex_digest: impl Into<Cow<'a, str>>,
     ) -> Result<Self, Error> {
         let hex = hex_digest.into();
 
@@ -645,11 +646,18 @@ impl FileDigest {
 
     /// Return the digest
     pub fn as_hex(&self) -> &str {
-        self.digest.as_str()
+        &self.digest
+    }
+
+    pub fn into_owned(self) -> FileDigest<'static> {
+        FileDigest {
+            digest: Cow::Owned(self.digest.into_owned()),
+            algo: self.algo,
+        }
     }
 }
 
-impl Display for FileDigest {
+impl Display for FileDigest<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_hex())
     }
@@ -665,13 +673,17 @@ pub struct ChangelogEntry {
 
 /// User facing accessor type for a file entry with contextual information
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct FileEntry {
-    /// Full path of the file entry and where it will be installed to.
-    pub(crate) path: PathBuf,
+pub struct FileEntry<'a> {
+    /// Directory component of the file path.
+    pub(crate) dirname: Cow<'a, str>,
+    /// Basename component of the file path.
+    pub(crate) basename: Cow<'a, str>,
     /// The file mode of the file.
     pub(crate) mode: types::FileMode,
-    /// Defines the owning user and group.
-    pub(crate) ownership: FileOwnership,
+    /// The owning user.
+    pub(crate) user: Cow<'a, str>,
+    /// The owning group.
+    pub(crate) group: Cow<'a, str>,
     /// Clocks the last access time.
     pub(crate) modified_at: Timestamp,
     /// The size of this file, dirs have the inode size (which is insane)
@@ -679,19 +691,29 @@ pub struct FileEntry {
     /// Flags describing the file or directory into three groups.
     pub(crate) flags: FileFlags,
     // @todo SELinux context? how is that done?
-    pub(crate) digest: Option<FileDigest>,
+    pub(crate) digest: Option<FileDigest<'a>>,
     /// Defines any capabilities on the file.
-    pub(crate) caps: Option<String>,
+    pub(crate) caps: Option<Cow<'a, str>>,
     /// Defines a target of a symlink (if the file is a symbolic link).
-    pub(crate) linkto: Option<String>,
+    pub(crate) linkto: Option<Cow<'a, str>>,
     /// Integrity Measurement Architecture (IMA) signature.
-    pub(crate) ima_signature: Option<String>,
+    pub(crate) ima_signature: Option<Cow<'a, str>>,
 }
 
-impl FileEntry {
+impl<'a> FileEntry<'a> {
     /// Returns the full installation path of this file entry.
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn path(&self) -> PathBuf {
+        Path::new(self.dirname.as_ref()).join(self.basename.as_ref())
+    }
+
+    /// Returns the directory component of this file entry's path.
+    pub fn dirname(&self) -> &str {
+        &self.dirname
+    }
+
+    /// Returns the basename component of this file entry's path.
+    pub fn basename(&self) -> &str {
+        &self.basename
     }
 
     /// Returns the file mode (permissions and type bits).
@@ -701,12 +723,12 @@ impl FileEntry {
 
     /// Returns the owning user of this file entry.
     pub fn user(&self) -> &str {
-        &self.ownership.user
+        &self.user
     }
 
     /// Returns the owning group of this file entry.
     pub fn group(&self) -> &str {
-        &self.ownership.group
+        &self.group
     }
 
     /// Returns the permission bits of this file entry (including setuid/setgid/sticky).
@@ -733,8 +755,9 @@ impl FileEntry {
     pub fn flags(&self) -> FileFlags {
         self.flags
     }
+
     /// Returns the cryptographic digest of this file, if present.
-    pub fn digest(&self) -> Option<&FileDigest> {
+    pub fn digest(&self) -> Option<&FileDigest<'a>> {
         self.digest.as_ref()
     }
 
@@ -751,6 +774,23 @@ impl FileEntry {
     /// Returns the IMA (Integrity Measurement Architecture) signature, if present.
     pub fn ima_signature(&self) -> Option<&str> {
         self.ima_signature.as_deref()
+    }
+
+    pub fn into_owned(self) -> FileEntry<'static> {
+        FileEntry {
+            dirname: Cow::Owned(self.dirname.into_owned()),
+            basename: Cow::Owned(self.basename.into_owned()),
+            mode: self.mode,
+            user: Cow::Owned(self.user.into_owned()),
+            group: Cow::Owned(self.group.into_owned()),
+            modified_at: self.modified_at,
+            size: self.size,
+            flags: self.flags,
+            digest: self.digest.map(FileDigest::into_owned),
+            caps: self.caps.map(|c| Cow::Owned(c.into_owned())),
+            linkto: self.linkto.map(|l| Cow::Owned(l.into_owned())),
+            ima_signature: self.ima_signature.map(|s| Cow::Owned(s.into_owned())),
+        }
     }
 }
 

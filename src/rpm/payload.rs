@@ -298,7 +298,7 @@ impl CpioEntry {
 impl<R: Read> Reader<R> {
     /// Parses metadata for the next entry in an archive, and returns a reader
     /// that will yield the entry data.
-    pub fn new(mut inner: R, file_entries: &[FileEntry]) -> io::Result<Reader<R>> {
+    pub fn new(mut inner: R, file_entries: &[FileEntry<'_>]) -> io::Result<Reader<R>> {
         // char    c_magic[6];
         let mut magic = [0u8; 6];
         inner.read_exact(&mut magic)?;
@@ -951,17 +951,17 @@ mod cpio_tests {
 #[cfg(test)]
 mod stripped_cpio_tests {
     use super::*;
+    use std::borrow::Cow;
     use std::io::{Cursor, copy};
 
-    fn make_file_entry(path: &str, size: usize) -> super::super::FileEntry {
+    fn make_file_entry(path: &str, size: usize) -> super::super::FileEntry<'static> {
         super::super::FileEntry {
-            path: path.into(),
+            dirname: Cow::Owned(String::new()),
+            basename: Cow::Owned(path.to_owned()),
             size,
             mode: crate::FileMode::regular(0o644),
-            ownership: crate::rpm::headers::FileOwnership {
-                user: "root".to_string(),
-                group: "root".to_string(),
-            },
+            user: Cow::Borrowed("root"),
+            group: Cow::Borrowed("root"),
             modified_at: crate::Timestamp(0),
             flags: crate::FileFlags::empty(),
             digest: None,

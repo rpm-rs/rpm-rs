@@ -11,12 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Added
 
-- `FileEntry::permissions()`, `FileEntry::user()`, `FileEntry::group()`
+- `PackageMetadata::get_file_paths_split()` returns the file paths as `parent_dir`, `filename` pairs.
+- `FileEntry::permissions()`, `FileEntry::user()`, `FileEntry::group()`, `FileEntry::dirname()`, `FileEntry::basename()`
+- `PackageMetadata::for_each_file_entry()` processes file entries via callback without collecting into a `Vec`.
 
 ## Breaking Changes
 
 - `FileEntry` fields are made private, accessor methods are provided instead.
-- `FileEntry::ownership()` not carried over, use `.user()` and `.group()` instead
+- `FileEntry::ownership()` not carried over, use `.user()` and `.group()` instead.
+- `FileEntry` now borrows from the package header (`FileEntry<'a>`). Use `FileEntry::into_owned()` for a `'static` version.
+- `FileEntry::path()` now returns `PathBuf` (constructed from dirname + basename) instead of being a stored field.
+- `FileDigest` now borrows from the package header (`FileDigest<'a>`). Use `FileDigest::into_owned()` for a `'static` version.
+
+## Performance
+
+- `FileEntry` uses zero-copy parsing via `Cow<'a, str>`, borrowing string data directly from the RPM header instead of allocating copies. This significantly reduces allocations when iterating file metadata on large packages.
 
 ## Misc
 
