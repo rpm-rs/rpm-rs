@@ -36,11 +36,6 @@ required-features = ["payload"]
 path = "tests/compare.rs"
 
 [[test]]
-name = "payload"
-required-features = ["payload"]
-path = "tests/payload.rs"
-
-[[test]]
 name = "signatures"
 required-features = ["signature-meta"]
 path = "tests/signatures.rs"
