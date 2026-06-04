@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     fs,
-    io::{self, Seek},
+    io::{self, Read, Seek},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -235,8 +235,14 @@ impl Package {
     /// Open and parse a file at the provided path as an RPM package
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let rpm_file = fs::File::open(path.as_ref())?;
+        let file_size = rpm_file.metadata()?.len();
         let mut buf_reader = io::BufReader::new(rpm_file);
-        Self::parse(&mut buf_reader)
+        let metadata = PackageMetadata::parse(&mut buf_reader)?;
+        let payload_offset = metadata.get_package_segment_offsets().payload;
+        let payload_size = file_size.saturating_sub(payload_offset) as usize;
+        let mut payload = Vec::with_capacity(payload_size);
+        buf_reader.read_to_end(&mut payload)?;
+        Ok(Package { metadata, payload })
     }
 
     /// Parse an RPM package from an existing buffer
