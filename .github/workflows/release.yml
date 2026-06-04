@@ -8,7 +8,7 @@ jobs:
   publish-crates-io:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    environment: Releasing
+    environment: Release
     permissions:
       id-token: write
     steps:
