@@ -7,15 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Performance
+
+- `Package::open()` now pre-reserves enough space on the payload storage `Vec` to avoid resizing and the accompanying intermediate allocations.
+  - This was seen causing some issues with glibc allocator fragmentation.
+
 ## 0.25.0
 
-## Added
+### Added
 
 - `PackageMetadata::get_file_paths_split()` returns the file paths as `parent_dir`, `filename` pairs.
 - `FileEntry::permissions()`, `FileEntry::user()`, `FileEntry::group()`, `FileEntry::dirname()`, `FileEntry::basename()`
 - `PackageMetadata::for_each_file_entry()` processes file entries via callback without collecting into a `Vec`.
 
-## Breaking Changes
+### Breaking Changes
 
 - `FileEntry` fields are made private, accessor methods are provided instead.
 - `FileEntry::ownership()` not carried over, use `.user()` and `.group()` instead.
@@ -23,21 +28,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `FileEntry::path()` now returns `PathBuf` (constructed from dirname + basename) instead of being a stored field.
 - `FileDigest` now borrows from the package header (`FileDigest<'a>`). Use `FileDigest::into_owned()` for a `'static` version.
 
-## Performance
+### Performance
 
 - `FileEntry` uses zero-copy parsing via `Cow<'a, str>`, borrowing string data directly from the RPM header instead of allocating copies. This significantly reduces allocations when iterating file metadata on large packages.
 
-## Misc
+### Misc
 
 - CI now includes an ARM64 runner for Linux, and uploads ARM64 (Aarch64) packages to PyPI.
 
 ## 0.24.0
 
-## Added
+### Added
 
 - `PackageMetadata::get_evr()`
 
-## Removed
+### Removed
 
 - Removed the `Nevra` and `Evr` structs for EVR/NEVRA parsing & sorting. These have been moved to a separate `rpm-version` crate.
 
