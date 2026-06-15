@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use crate::{constants::*, decompress_stream, errors::*};
 
 use super::headers::*;
-use super::package::Package;
+use super::package::{Package, PackageMetadata};
 use super::payload;
 
 #[cfg(unix)]
@@ -240,6 +240,161 @@ impl ExactSizeIterator for FileIterator<'_> {
     }
 }
 
+/// A streaming reader for an RPM package payload.
+///
+/// Unlike [`Package`], this avoids loading the entire payload into memory.
+/// Call [`next_file`](Self::next_file) repeatedly to walk the archive one entry at a time.
+///
+/// Ghost files (not present in the payload archive) are returned with an empty
+/// body, matching the behaviour of [`Package::files`].
+///
+/// # Note on iteration
+///
+/// `PackageReader` does not implement [`Iterator`] because each
+/// [`StreamingRpmFile`] mutably borrows the reader until it is dropped or
+/// [`StreamingRpmFile::finish`] is called. Use a `while let` loop:
+///
+/// ```
+/// # #[cfg(feature = "payload")]
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use std::io::Read;
+///
+/// let mut reader = rpm::PackageReader::open(
+///     "tests/assets/RPMS/v6/rpm-basic-2.3.4-5.el9.noarch.rpm",
+/// )?;
+/// println!("Package: {}", reader.metadata.get_nevra()?);
+///
+/// while let Some(mut file) = reader.next_file()? {
+///     let mut buf = Vec::new();
+///     file.read_to_end(&mut buf)?;
+///     println!("  {} ({} bytes)", file.metadata.path().display(), buf.len());
+/// }
+/// # Ok(())
+/// # }
+/// # #[cfg(not(feature = "payload"))]
+/// # fn main() {}
+/// ```
+#[cfg(feature = "payload")]
+pub struct PackageReader {
+    /// Package headers and metadata.
+    pub metadata: PackageMetadata,
+    file_entries: Vec<FileEntry<'static>>,
+    archive: Box<dyn Read>,
+    count: usize,
+}
+
+#[cfg(feature = "payload")]
+impl PackageReader {
+    /// Open an RPM package file for streaming payload access.
+    ///
+    /// Only the package headers are read upfront; payload bytes are decompressed
+    /// on demand as you call [`next_file`](Self::next_file).
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let file = fs::File::open(path.as_ref())?;
+        let mut buf_reader = io::BufReader::new(file);
+        let metadata = PackageMetadata::parse(&mut buf_reader)?;
+        let compression = metadata.get_payload_compressor()?;
+        let file_entries = metadata
+            .get_file_entries()?
+            .into_iter()
+            .map(|e| e.into_owned())
+            .collect();
+        let archive = decompress_stream(compression, buf_reader)?;
+        Ok(PackageReader {
+            metadata,
+            file_entries,
+            archive,
+            count: 0,
+        })
+    }
+
+    /// Return the next file from the payload, or `None` at end of archive.
+    ///
+    /// Ghost files are returned with an empty body (they are not present in the
+    /// payload archive, so no bytes are read from the stream for them).
+    ///
+    /// The returned [`StreamingRpmFile`] holds a mutable borrow on the underlying
+    /// decompression stream. Drop it or call [`StreamingRpmFile::finish`] before
+    /// calling `next_file` again.
+    pub fn next_file(&mut self) -> Result<Option<StreamingRpmFile<'_>>, Error> {
+        if self.count >= self.file_entries.len() {
+            return Ok(None);
+        }
+
+        let metadata = self.file_entries[self.count].clone();
+        self.count += 1;
+
+        // Ghost files are not present in the payload archive; return them with
+        // no reader (reads will immediately return Ok(0)).
+        if metadata.flags.contains(FileFlags::GHOST) {
+            return Ok(Some(StreamingRpmFile {
+                metadata,
+                reader: None,
+            }));
+        }
+
+        let reader =
+            payload::Reader::new(&mut self.archive, &self.file_entries).map_err(Error::Io)?;
+
+        if reader.is_trailer() {
+            return Ok(None);
+        }
+
+        Ok(Some(StreamingRpmFile {
+            metadata,
+            reader: Some(reader),
+        }))
+    }
+}
+
+/// A single file from an RPM package payload, readable without buffering the full archive.
+///
+/// Implements [`Read`](io::Read) to stream the file's bytes. Any unread bytes are
+/// drained on [`drop`] (best-effort; errors are silenced). Call [`finish`](Self::finish)
+/// explicitly if you need to propagate drain errors.
+#[cfg(feature = "payload")]
+pub struct StreamingRpmFile<'a> {
+    /// Metadata for this file (path, permissions, timestamps, digest, …).
+    pub metadata: FileEntry<'static>,
+    // None for ghost files and after finish() is called.
+    reader: Option<payload::Reader<&'a mut Box<dyn Read>>>,
+}
+
+#[cfg(feature = "payload")]
+impl StreamingRpmFile<'_> {
+    /// Drain any unread bytes and return any IO error encountered.
+    ///
+    /// This is optional — [`Drop`] drains automatically — but calling `finish`
+    /// explicitly lets you propagate errors that would otherwise be silenced.
+    /// After this call, further reads return `Ok(0)`.
+    pub fn finish(&mut self) -> io::Result<()> {
+        if let Some(reader) = self.reader.take() {
+            reader.finish()?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "payload")]
+impl io::Read for StreamingRpmFile<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self.reader.as_mut() {
+            Some(r) => r.read(buf),
+            None => Ok(0),
+        }
+    }
+}
+
+#[cfg(feature = "payload")]
+impl Drop for StreamingRpmFile<'_> {
+    fn drop(&mut self) {
+        // Best-effort drain; errors are silenced. Use finish() to propagate them.
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.finish();
+        }
+    }
+}
+
 /// These tests cover payload + metadata integration, but they do equality tests on
 /// non-public fields / types, so they can't be actual integration tests, even though
 /// they otherwise would make more sense as integration tests.
@@ -249,6 +404,7 @@ mod test_payload_integration {
     use pretty_assertions::assert_eq;
     use sha2::{Digest, Sha256};
     use std::borrow::Cow;
+    use std::io::Read;
 
     pub mod pkgs {
         pub mod v4 {
@@ -1524,6 +1680,107 @@ mod test_payload_integration {
             assert!(spec_content.contains("License:        LGPL"));
         }
 
+        Ok(())
+    }
+
+    /// Test that PackageReader produces the same files (including ghosts) as
+    /// Package::files(), without loading the payload into memory upfront.
+    #[test]
+    fn test_package_reader_matches_files_api() -> Result<(), Box<dyn std::error::Error>> {
+        for path in [pkgs::v4::RPM_BASIC, pkgs::v6::RPM_BASIC] {
+            let package = Package::open(path)?;
+            let expected: Vec<RpmFile> = package.files()?.collect::<Result<_, _>>()?;
+
+            let mut reader = PackageReader::open(path)?;
+            let mut actual = Vec::new();
+
+            while let Some(mut file) = reader.next_file()? {
+                let mut content = Vec::new();
+                file.read_to_end(&mut content)?;
+                actual.push((file.metadata.path().to_owned(), content));
+            }
+
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "file count mismatch for {path}"
+            );
+            for (i, ((actual_path, actual_content), expected_file)) in
+                actual.iter().zip(&expected).enumerate()
+            {
+                assert_eq!(
+                    actual_path,
+                    &expected_file.metadata.path(),
+                    "path mismatch at index {i}"
+                );
+                assert_eq!(
+                    actual_content,
+                    &expected_file.content,
+                    "content mismatch for {}",
+                    actual_path.display()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Test that dropping a StreamingRpmFile before fully reading it still allows
+    /// reading the subsequent file correctly (unread bytes are drained on drop).
+    #[test]
+    fn test_package_reader_partial_read_then_drop() -> Result<(), Box<dyn std::error::Error>> {
+        let package = Package::open(pkgs::v6::RPM_BASIC)?;
+        let expected: Vec<RpmFile> = package.files()?.collect::<Result<_, _>>()?;
+
+        let mut reader = PackageReader::open(pkgs::v6::RPM_BASIC)?;
+
+        // Drop the first file without reading it — drain must happen automatically.
+        let _ = reader.next_file()?.expect("first file");
+
+        // The second file must still be readable and correct.
+        let mut second = reader.next_file()?.expect("second file");
+        let mut content = Vec::new();
+        second.read_to_end(&mut content)?;
+
+        assert_eq!(content, expected[1].content);
+        Ok(())
+    }
+
+    /// Test that StreamingRpmFile::finish() propagates drain errors and that
+    /// ghost files (reader == None) are handled correctly.
+    #[test]
+    fn test_package_reader_finish_and_ghost() -> Result<(), Box<dyn std::error::Error>> {
+        let package = Package::open(pkgs::v6::RPM_BASIC)?;
+        let expected: Vec<RpmFile> = package.files()?.collect::<Result<_, _>>()?;
+        let ghost_count = expected
+            .iter()
+            .filter(|f| f.metadata.flags().contains(FileFlags::GHOST))
+            .count();
+        assert!(ghost_count > 0, "fixture must have at least one ghost file");
+
+        let mut reader = PackageReader::open(pkgs::v6::RPM_BASIC)?;
+        let mut ghost_seen = 0usize;
+        let mut i = 0usize;
+
+        while let Some(mut file) = reader.next_file()? {
+            if file.metadata.flags().contains(FileFlags::GHOST) {
+                // Ghost files: read returns 0 bytes immediately.
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf)?;
+                assert!(buf.is_empty(), "ghost file must have empty content");
+                // Explicit finish on a ghost file must be a no-op.
+                file.finish()?;
+                ghost_seen += 1;
+            } else {
+                // Use explicit finish() instead of drop for non-ghost files.
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf)?;
+                assert_eq!(buf, expected[i].content);
+                file.finish()?;
+            }
+            i += 1;
+        }
+
+        assert_eq!(ghost_seen, ghost_count);
         Ok(())
     }
 }
