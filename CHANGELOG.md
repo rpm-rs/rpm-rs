@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `PackageReader` and `StreamingRpmFile`: streaming access to the payload archive without loading it into memory. `PackageReader::open()` reads only the package headers; payload bytes are decompressed on demand. `StreamingRpmFile` implements `Read` and provides an explicit `finish()` for propagating drain errors. Ghost files are returned with an empty body, matching `Package::files()`. Closes #252.
+
 ## 0.25.1
 
 ### Performance
