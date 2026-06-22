@@ -60,7 +60,7 @@ pgp = { version = "0.19.0", features = ["draft-pqc"], optional = true }
 getrandom = { version = "0.4.0", optional = true }
 chrono = { version = "0.4", optional = true }
 log = "0.4"
-itertools = "0.14"
+itertools = "0.15"
 hex = { version = "0.4", features = ["std"] }
 zstd = { version = "0.13", optional = true }
 liblzma = { version = "0.4", optional = true }
