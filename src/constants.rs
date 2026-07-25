@@ -535,6 +535,10 @@ pub const RPM_MAGIC: [u8; 4] = [0xed, 0xab, 0xee, 0xdb];
 /// header magic recognition (not the lead!)
 pub const HEADER_MAGIC: [u8; 3] = [0x8e, 0xad, 0xe8];
 
+// NOTE: Do not use bitflags' `::all()` method on these types. RPM regularly
+// sets all 32 bits including reserved/undefined ones (e.g. 0xffffffff for
+// default file verify flags), but bitflags defines `all()` as only the union
+// of *known* flags. Use ALL_FLAGS constants or `from_bits_retain()` instead.
 bitflags! {
     #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
     pub struct DependencyFlags: u32 {
@@ -622,17 +626,11 @@ bitflags! {
         const READFAIL	= 1 << 29;	  // file read failed
         const LSTATFAIL	= 1 << 30;	  // lstat failed
         const LGETFILECONFAIL	= 1 << 31;	// lgetfilecon failed
-    }
-}
 
-impl FileVerifyFlags {
-    /// Default file verification flags used by RPM.
-    ///
-    /// RPM sets all 32 bits to 1 by default (0xffffffff), which includes
-    /// not only the explicitly defined flags above, but also reserved bits
-    /// used internally by rpm for rpmVerifyAttrs, rpmVerifyFlags, and rpmQueryFlags.
-    pub fn all_flags() -> Self {
-        Self::from_bits_retain(0xffffffff)
+        // RPM sets all 32 bits to 1 by default (0xffffffff), which includes
+        // not only the explicitly defined flags above, but also reserved bits
+        // used internally by rpm for rpmVerifyAttrs, rpmVerifyFlags, and rpmQueryFlags.
+        const ALL_FLAGS = 0xffffffff;
     }
 }
 

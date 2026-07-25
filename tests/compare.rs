@@ -536,11 +536,8 @@ fn test_build_rpm_file_attrs() -> Result<(), Box<dyn std::error::Error>> {
     .with_file_contents(
         "verify_not\n",
         // %verify(not md5 size) — all bits set except md5 and size
-        FileOptions::new("/opt/rpm-file-attrs/verify_not").verify(
-            FileVerifyFlags::from_bits_retain(
-                !(FileVerifyFlags::FILEDIGEST | FileVerifyFlags::FILESIZE).bits(),
-            ),
-        ),
+        FileOptions::new("/opt/rpm-file-attrs/verify_not")
+            .verify(!(FileVerifyFlags::FILEDIGEST | FileVerifyFlags::FILESIZE)),
     )?
     .with_file_contents(
         "verify_all\n",
@@ -559,17 +556,14 @@ fn test_build_rpm_file_attrs() -> Result<(), Box<dyn std::error::Error>> {
         "verify_none\n",
         // %verify(not md5 size mode mtime rdev user group link) — all bits set except these 8
         FileOptions::new("/opt/rpm-file-attrs/verify_none").verify(
-            FileVerifyFlags::from_bits_retain(
-                !(FileVerifyFlags::FILEDIGEST
-                    | FileVerifyFlags::FILESIZE
-                    | FileVerifyFlags::MODE
-                    | FileVerifyFlags::MTIME
-                    | FileVerifyFlags::RDEV
-                    | FileVerifyFlags::USER
-                    | FileVerifyFlags::GROUP
-                    | FileVerifyFlags::LINKTO)
-                    .bits(),
-            ),
+            !(FileVerifyFlags::FILEDIGEST
+                | FileVerifyFlags::FILESIZE
+                | FileVerifyFlags::MODE
+                | FileVerifyFlags::MTIME
+                | FileVerifyFlags::RDEV
+                | FileVerifyFlags::USER
+                | FileVerifyFlags::GROUP
+                | FileVerifyFlags::LINKTO),
         ),
     )?
     .build()?;
