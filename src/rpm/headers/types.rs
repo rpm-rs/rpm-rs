@@ -204,7 +204,7 @@ mod build_types {
                     flag: FileFlags::empty(),
                     use_default_permissions: true,
                     caps: None,
-                    verify_flags: FileVerifyFlags::all_flags(),
+                    verify_flags: FileVerifyFlags::ALL_FLAGS,
                 },
             }
         }
@@ -226,7 +226,7 @@ mod build_types {
                     flag: FileFlags::empty(),
                     use_default_permissions: true,
                     caps: None,
-                    verify_flags: FileVerifyFlags::all_flags(),
+                    verify_flags: FileVerifyFlags::ALL_FLAGS,
                 },
             }
         }
@@ -250,7 +250,7 @@ mod build_types {
                     flag: FileFlags::empty(),
                     use_default_permissions: false,
                     caps: None,
-                    verify_flags: FileVerifyFlags::all_flags(),
+                    verify_flags: FileVerifyFlags::ALL_FLAGS,
                 },
             }
         }
@@ -277,14 +277,11 @@ mod build_types {
                     use_default_permissions: true,
                     caps: None,
                     // Ghost files can't verify content-related attributes since they don't exist in the payload
-                    verify_flags: FileVerifyFlags::from_bits_retain(
-                        FileVerifyFlags::all_flags().bits()
-                            & !(FileVerifyFlags::FILEDIGEST
-                                | FileVerifyFlags::FILESIZE
-                                | FileVerifyFlags::LINKTO
-                                | FileVerifyFlags::MTIME)
-                                .bits(),
-                    ),
+                    verify_flags: FileVerifyFlags::ALL_FLAGS
+                        & !(FileVerifyFlags::FILEDIGEST
+                            | FileVerifyFlags::FILESIZE
+                            | FileVerifyFlags::LINKTO
+                            | FileVerifyFlags::MTIME),
                 },
             }
         }
@@ -308,7 +305,7 @@ mod build_types {
                     flag: FileFlags::GHOST,
                     use_default_permissions: true,
                     caps: None,
-                    verify_flags: FileVerifyFlags::all_flags(),
+                    verify_flags: FileVerifyFlags::ALL_FLAGS,
                 },
             }
         }
