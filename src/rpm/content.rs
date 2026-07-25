@@ -268,6 +268,10 @@ impl ExactSizeIterator for FileIterator<'_> {
 ///     let mut buf = Vec::new();
 ///     file.read_to_end(&mut buf)?;
 ///     println!("  {} ({} bytes)", file.metadata.path().display(), buf.len());
+///     // Explicitly drain any remaining bytes and propagate errors.
+///     // This is optional — unread bytes are drained automatically on drop,
+///     // but drop silences errors.
+///     file.finish()?;
 /// }
 /// # Ok(())
 /// # }
@@ -291,15 +295,23 @@ impl PackageReader {
     /// on demand as you call [`next_file`](Self::next_file).
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let file = fs::File::open(path.as_ref())?;
-        let mut buf_reader = io::BufReader::new(file);
-        let metadata = PackageMetadata::parse(&mut buf_reader)?;
+        let buf_reader = io::BufReader::new(file);
+        Self::parse(buf_reader)
+    }
+
+    /// Parse an RPM package from an existing reader for streaming payload access.
+    ///
+    /// Only the package headers are read upfront; payload bytes are decompressed
+    /// on demand as you call [`next_file`](Self::next_file).
+    pub fn parse(mut input: impl io::BufRead + 'static) -> Result<Self, Error> {
+        let metadata = PackageMetadata::parse(&mut input)?;
         let compression = metadata.get_payload_compressor()?;
         let file_entries = metadata
             .get_file_entries()?
             .into_iter()
             .map(|e| e.into_owned())
             .collect();
-        let archive = decompress_stream(compression, buf_reader)?;
+        let archive = decompress_stream(compression, input)?;
         Ok(PackageReader {
             metadata,
             file_entries,
@@ -323,6 +335,9 @@ impl PackageReader {
 
         let metadata = self.file_entries[self.count].clone();
         self.count += 1;
+
+        // Assumes CPIO entries appear in the same order as header file entries.
+        // This is guaranteed by RPM's build process but not formally validated here.
 
         // Ghost files are not present in the payload archive; return them with
         // no reader (reads will immediately return Ok(0)).
@@ -367,6 +382,10 @@ impl StreamingRpmFile<'_> {
     /// This is optional — [`Drop`] drains automatically — but calling `finish`
     /// explicitly lets you propagate errors that would otherwise be silenced.
     /// After this call, further reads return `Ok(0)`.
+    ///
+    /// If this returns an error, the underlying decompression stream is in an
+    /// indeterminate position — subsequent [`PackageReader::next_file`] calls
+    /// will likely return corrupt data.
     pub fn finish(&mut self) -> io::Result<()> {
         if let Some(reader) = self.reader.take() {
             reader.finish()?;
