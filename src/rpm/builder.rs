@@ -1540,7 +1540,7 @@ impl PackageBuilder {
         let mut combined_file_sizes: u64 = 0;
         let mut uses_file_capabilities = false;
 
-        for (_, entry) in self.files.iter() {
+        for entry in self.files.values() {
             combined_file_sizes += entry.source.size()?;
         }
 
