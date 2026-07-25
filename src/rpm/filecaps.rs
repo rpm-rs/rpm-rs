@@ -79,7 +79,7 @@ fn validate_capset(s: &str) -> Result<(), Error> {
 
     for part in s.split(',') {
         if !CAPS.contains(&part.to_uppercase().as_str()) {
-            return Err(Error::InvalidFileCaps(format!("Unknown cap {}", &part)));
+            return Err(Error::InvalidFileCaps(format!("Unknown cap {}", part)));
         }
     }
 
@@ -187,7 +187,7 @@ pub fn validate_caps_text(s: &str) -> Result<(), Error> {
             // Example: "+eip" or "-eip"
             return Err(Error::InvalidFileCaps(format!(
                 "Unexpected first char of `{}`",
-                &part
+                part
             )));
         }
 

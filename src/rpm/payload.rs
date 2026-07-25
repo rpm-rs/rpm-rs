@@ -687,7 +687,7 @@ impl<W: Write> Writer<W> {
     fn try_write_header(&mut self) -> io::Result<()> {
         if !self.header.is_empty() {
             self.inner.write_all(&self.header)?;
-            self.header.truncate(0);
+            self.header.clear();
         }
         Ok(())
     }
