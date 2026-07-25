@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.26.0
+
 ### Added
 
 - `PackageReader` and `StreamingRpmFile` provide streaming access to the payload archive without loading it into memory ahead of time.
