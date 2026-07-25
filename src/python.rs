@@ -10,8 +10,9 @@
 //! With maturin, create a `pyproject.toml` that specifies `features = ["python"]` and run
 //! `maturin develop` or `maturin build`.
 
-use std::io::{BufReader, Cursor};
+use std::io::{BufReader, Cursor, Read};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -1150,6 +1151,84 @@ impl PyRpmFile {
     #[getter]
     fn content(&self) -> &[u8] {
         &self.0.content
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PackageReader
+// ---------------------------------------------------------------------------
+
+/// A streaming reader for an RPM package payload.
+///
+/// Unlike :class:`Package`, this avoids loading the entire payload into memory.
+/// Only the package headers are read upfront; payload bytes are decompressed on
+/// demand as you iterate.
+///
+/// Implements the iterator protocol — use it in a ``for`` loop:
+///
+/// ```python
+/// reader = PackageReader.open("package.rpm")
+/// for entry in reader:
+///     print(f"{entry.metadata.path}: {len(entry.content)} bytes")
+/// ```
+#[pyclass(name = "PackageReader")]
+pub struct PyPackageReader {
+    metadata: crate::PackageMetadata,
+    inner: Mutex<Option<crate::PackageReader>>,
+}
+
+// Safety: PackageReader contains Box<dyn Read> which isn't Send/Sync, but the
+// concrete reader (BufReader<File>) is. Access is serialized by the Mutex.
+unsafe impl Send for PyPackageReader {}
+unsafe impl Sync for PyPackageReader {}
+
+#[pymethods]
+impl PyPackageReader {
+    /// Open an RPM package file for streaming payload access.
+    #[staticmethod]
+    fn open(path: PathBuf) -> PyResult<Self> {
+        let reader = crate::PackageReader::open(path).map_err(to_pyerr)?;
+        let metadata = reader.metadata.clone();
+        Ok(PyPackageReader {
+            metadata,
+            inner: Mutex::new(Some(reader)),
+        })
+    }
+
+    /// The package metadata (headers).
+    #[getter]
+    fn metadata(&self) -> PyPackageMetadata {
+        PyPackageMetadata(self.metadata.clone())
+    }
+
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&self) -> PyResult<Option<PyRpmFile>> {
+        let mut guard = self.inner.lock().expect("lock poisoned");
+        let result = {
+            let reader = match guard.as_mut() {
+                Some(r) => r,
+                None => return Ok(None),
+            };
+            match reader.next_file() {
+                Ok(Some(mut file)) => {
+                    let metadata = file.metadata.clone();
+                    let mut content = Vec::new();
+                    file.read_to_end(&mut content)
+                        .map_err(|e| to_pyerr(crate::Error::Io(e)))?;
+                    file.finish().map_err(|e| to_pyerr(crate::Error::Io(e)))?;
+                    Ok(Some(PyRpmFile(crate::RpmFile { metadata, content })))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(to_pyerr(e)),
+            }
+        };
+        if matches!(&result, Ok(None)) {
+            *guard = None;
+        }
+        result
     }
 }
 
@@ -2669,6 +2748,7 @@ fn make_int_enum<'py>(
 #[pymodule]
 pub fn rpm_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPackage>()?;
+    m.add_class::<PyPackageReader>()?;
     m.add_class::<PyPackageMetadata>()?;
     m.add_class::<PyHeader>()?;
     m.add_class::<PyPackageSegmentOffsets>()?;

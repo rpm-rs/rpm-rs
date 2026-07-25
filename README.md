@@ -139,6 +139,30 @@ pkg.extract("./extracted-pkg")?;
 // Creates ./extracted-pkg/ with the package's file tree inside it
 ```
 
+#### Stream file contents without buffering
+
+`PackageReader` reads only the package headers upfront and decompresses the
+payload on demand, avoiding loading the entire package into memory.
+
+```rust
+use std::io::Read;
+
+let mut reader = rpm::PackageReader::open(
+    "tests/assets/RPMS/v6/rpm-basic-2.3.4-5.el9.noarch.rpm",
+)?;
+println!("Package: {}", reader.metadata.get_nevra()?);
+
+while let Some(mut file) = reader.next_file()? {
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    println!("  {} ({} bytes)", file.metadata.path().display(), buf.len());
+    // Explicitly drain any remaining bytes and propagate errors.
+    // Optional — unread bytes are drained automatically on drop,
+    // but drop silences errors.
+    file.finish()?;
+}
+```
+
 ### Verify signatures
 
 #### Verify using a keyring with multiple certificates
