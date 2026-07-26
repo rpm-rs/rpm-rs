@@ -1397,148 +1397,14 @@ impl PackageMetadata {
     /// # Ok(()) }
     /// ```
     pub fn get_file_entries(&self) -> Result<Vec<FileEntry<'_>>, Error> {
-        // rpm does not encode it, if it is the default md5
-        let algorithm = self
-            .get_file_digest_algorithm()
-            .unwrap_or(DigestAlgorithm::Md5);
-
-        let modes = match self
-            .header
-            .get_entry_data_as_u16_array(IndexTag::RPMTAG_FILEMODES)
-        {
-            Ok(modes) => modes,
-            Err(Error::TagNotFound(_)) => return Ok(Vec::new()),
-            Err(e) => return Err(e),
+        let arrays = match FileTagArrays::load(self)? {
+            Some(a) => a,
+            None => return Ok(Vec::new()),
         };
-
-        let users = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEUSERNAME)?;
-        let groups = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEGROUPNAME)?;
-        let digests = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEDIGESTS)?;
-        let mtimes = self
-            .header
-            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEMTIMES)?;
-        let sizes = self
-            .header
-            .get_entry_data_as_u64_array(IndexTag::RPMTAG_LONGFILESIZES)
-            .or_else(|_e| {
-                self.header
-                    .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILESIZES)
-                    .map(|file_sizes| {
-                        file_sizes
-                            .into_iter()
-                            .map(|file_size| file_size as _)
-                            .collect::<Vec<u64>>()
-                    })
-            })?;
-        let flags = self
-            .header
-            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEFLAGS)?;
-        let links = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILELINKTOS)?;
-
-        // Optional tags — not present in all packages
-        let caps = match self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILECAPS)
-        {
-            Ok(caps) => Some(caps),
-            Err(Error::TagNotFound(_)) => None,
-            Err(e) => return Err(e),
-        };
-        let ima_signatures = match self
-            .signature
-            .get_entry_data_as_string_array(IndexSignatureTag::RPMSIGTAG_FILESIGNATURES)
-        {
-            Ok(ima_signatures) => Some(ima_signatures),
-            Err(Error::TagNotFound(_)) => None,
-            Err(e) => return Err(e),
-        };
-
-        // Inline path resolution to avoid an intermediate Vec<(&str, &str)>.
-        let basenames_result = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_BASENAMES);
-        let biject_result = self
-            .header
-            .get_entry_data_as_u32_array(IndexTag::RPMTAG_DIRINDEXES);
-        let dirs_result = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_DIRNAMES);
-
-        if matches!(&basenames_result, Err(Error::TagNotFound(_)))
-            && matches!(&biject_result, Err(Error::TagNotFound(_)))
-            && matches!(&dirs_result, Err(Error::TagNotFound(_)))
-        {
-            return Ok(Vec::new());
-        }
-
-        let basenames = basenames_result?;
-        let biject = biject_result?;
-        let dirs = dirs_result?;
-
-        let n_files = modes.len();
-        if users.len() != n_files
-            || groups.len() != n_files
-            || digests.len() != n_files
-            || mtimes.len() != n_files
-            || sizes.len() != n_files
-            || flags.len() != n_files
-            || links.len() != n_files
-            || basenames.len() != n_files
-            || biject.len() != n_files
-        {
-            return Err(Error::InconsistentTagArrayLengths);
-        }
-
+        let n_files = arrays.len();
         let mut result = Vec::with_capacity(n_files);
         for i in 0..n_files {
-            let dir_index = biject[i] as usize;
-            let dirname = dirs
-                .get(dir_index)
-                .copied()
-                .ok_or_else(|| Error::InvalidTagIndex {
-                    tag: IndexTag::RPMTAG_DIRINDEXES.to_string(),
-                    index: biject[i],
-                    bound: dirs.len() as u32,
-                })?;
-            let digest = if digests[i].is_empty() {
-                None
-            } else {
-                Some(FileDigest::new(algorithm, digests[i])?)
-            };
-            let cap = caps
-                .as_ref()
-                .and_then(|c| c.get(i))
-                .map(|s| Cow::Borrowed(*s));
-            let ima_signature = ima_signatures
-                .as_ref()
-                .and_then(|s| s.get(i))
-                .map(|s| Cow::Borrowed(*s));
-            result.push(FileEntry {
-                dirname: Cow::Borrowed(dirname),
-                basename: Cow::Borrowed(basenames[i]),
-                user: Cow::Borrowed(users[i]),
-                group: Cow::Borrowed(groups[i]),
-                mode: modes[i].into(),
-                modified_at: crate::Timestamp(mtimes[i]),
-                digest,
-                flags: FileFlags::from_bits_retain(flags[i]),
-                size: sizes[i] as usize,
-                caps: cap,
-                linkto: if links[i].is_empty() {
-                    None
-                } else {
-                    Some(Cow::Borrowed(links[i]))
-                },
-                ima_signature,
-            });
+            result.push(arrays.entry(i)?);
         }
         Ok(result)
     }
@@ -1575,23 +1441,14 @@ impl PackageMetadata {
             Cow::Owned(format!("{search_dirname}/"))
         };
 
-        let basenames = match self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_BASENAMES)
-        {
-            Ok(b) => b,
-            Err(Error::TagNotFound(_)) => return Ok(None),
-            Err(e) => return Err(e),
+        let arrays = match FileTagArrays::load(self)? {
+            Some(a) => a,
+            None => return Ok(None),
         };
-        let biject = self
-            .header
-            .get_entry_data_as_u32_array(IndexTag::RPMTAG_DIRINDEXES)?;
-        let dirs = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_DIRNAMES)?;
 
         // Find the dir index that matches the search dirname
-        let target_dir_index = match dirs
+        let target_dir_index = match arrays
+            .dirs
             .iter()
             .position(|d| *d == search_dirname_slash.as_ref())
         {
@@ -1600,104 +1457,17 @@ impl PackageMetadata {
         };
 
         // Find the file index where both basename and dir_index match
-        let file_index = match basenames
+        let file_index = match arrays
+            .basenames
             .iter()
-            .zip(biject.iter())
+            .zip(arrays.biject.iter())
             .position(|(bn, di)| *bn == search_basename && *di == target_dir_index)
         {
             Some(idx) => idx,
             None => return Ok(None),
         };
 
-        // Read the metadata arrays to construct the FileEntry at file_index
-        let algorithm = self
-            .get_file_digest_algorithm()
-            .unwrap_or(DigestAlgorithm::Md5);
-
-        let modes = self
-            .header
-            .get_entry_data_as_u16_array(IndexTag::RPMTAG_FILEMODES)?;
-        let users = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEUSERNAME)?;
-        let groups = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEGROUPNAME)?;
-        let digests = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEDIGESTS)?;
-        let mtimes = self
-            .header
-            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEMTIMES)?;
-        let sizes = self
-            .header
-            .get_entry_data_as_u64_array(IndexTag::RPMTAG_LONGFILESIZES)
-            .or_else(|_e| {
-                self.header
-                    .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILESIZES)
-                    .map(|file_sizes| {
-                        file_sizes
-                            .into_iter()
-                            .map(|file_size| file_size as _)
-                            .collect::<Vec<u64>>()
-                    })
-            })?;
-        let flags = self
-            .header
-            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEFLAGS)?;
-        let links = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILELINKTOS)?;
-        let caps = match self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILECAPS)
-        {
-            Ok(caps) => Some(caps),
-            Err(Error::TagNotFound(_)) => None,
-            Err(e) => return Err(e),
-        };
-        let ima_signatures = match self
-            .signature
-            .get_entry_data_as_string_array(IndexSignatureTag::RPMSIGTAG_FILESIGNATURES)
-        {
-            Ok(ima_signatures) => Some(ima_signatures),
-            Err(Error::TagNotFound(_)) => None,
-            Err(e) => return Err(e),
-        };
-
-        let i = file_index;
-        let digest = if digests[i].is_empty() {
-            None
-        } else {
-            Some(FileDigest::new(algorithm, digests[i])?)
-        };
-        let cap = caps
-            .as_ref()
-            .and_then(|c| c.get(i))
-            .map(|s| Cow::Borrowed(*s));
-        let ima_signature = ima_signatures
-            .as_ref()
-            .and_then(|s| s.get(i))
-            .map(|s| Cow::Borrowed(*s));
-
-        Ok(Some(FileEntry {
-            dirname: Cow::Borrowed(dirs[target_dir_index as usize]),
-            basename: Cow::Borrowed(basenames[i]),
-            user: Cow::Borrowed(users[i]),
-            group: Cow::Borrowed(groups[i]),
-            mode: modes[i].into(),
-            modified_at: crate::Timestamp(mtimes[i]),
-            digest,
-            flags: FileFlags::from_bits_retain(flags[i]),
-            size: sizes[i] as usize,
-            caps: cap,
-            linkto: if links[i].is_empty() {
-                None
-            } else {
-                Some(Cow::Borrowed(links[i]))
-            },
-            ima_signature,
-        }))
+        Ok(Some(arrays.entry(file_index)?))
     }
 
     /// Invoke a callback for each file entry in the RPM, without collecting them all into memory.
@@ -1720,149 +1490,13 @@ impl PackageMetadata {
         &self,
         mut f: impl FnMut(FileEntry<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        // rpm does not encode it, if it is the default md5
-        let algorithm = self
-            .get_file_digest_algorithm()
-            .unwrap_or(DigestAlgorithm::Md5);
-
-        let modes = match self
-            .header
-            .get_entry_data_as_u16_array(IndexTag::RPMTAG_FILEMODES)
-        {
-            Ok(modes) => modes,
-            Err(Error::TagNotFound(_)) => return Ok(()),
-            Err(e) => return Err(e),
+        let arrays = match FileTagArrays::load(self)? {
+            Some(a) => a,
+            None => return Ok(()),
         };
-
-        let users = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEUSERNAME)?;
-        let groups = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEGROUPNAME)?;
-        let digests = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEDIGESTS)?;
-        let mtimes = self
-            .header
-            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEMTIMES)?;
-        let sizes = self
-            .header
-            .get_entry_data_as_u64_array(IndexTag::RPMTAG_LONGFILESIZES)
-            .or_else(|_e| {
-                self.header
-                    .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILESIZES)
-                    .map(|file_sizes| {
-                        file_sizes
-                            .into_iter()
-                            .map(|file_size| file_size as _)
-                            .collect::<Vec<u64>>()
-                    })
-            })?;
-        let flags = self
-            .header
-            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEFLAGS)?;
-        let links = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILELINKTOS)?;
-
-        // Optional tags — not present in all packages
-        let caps = match self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILECAPS)
-        {
-            Ok(caps) => Some(caps),
-            Err(Error::TagNotFound(_)) => None,
-            Err(e) => return Err(e),
-        };
-        let ima_signatures = match self
-            .signature
-            .get_entry_data_as_string_array(IndexSignatureTag::RPMSIGTAG_FILESIGNATURES)
-        {
-            Ok(ima_signatures) => Some(ima_signatures),
-            Err(Error::TagNotFound(_)) => None,
-            Err(e) => return Err(e),
-        };
-
-        // Inline path resolution to avoid an intermediate Vec<(&str, &str)>.
-        let basenames_result = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_BASENAMES);
-        let biject_result = self
-            .header
-            .get_entry_data_as_u32_array(IndexTag::RPMTAG_DIRINDEXES);
-        let dirs_result = self
-            .header
-            .get_entry_data_as_string_array(IndexTag::RPMTAG_DIRNAMES);
-
-        if matches!(&basenames_result, Err(Error::TagNotFound(_)))
-            && matches!(&biject_result, Err(Error::TagNotFound(_)))
-            && matches!(&dirs_result, Err(Error::TagNotFound(_)))
-        {
-            return Ok(());
+        for i in 0..arrays.len() {
+            f(arrays.entry(i)?)?;
         }
-
-        let basenames = basenames_result?;
-        let biject = biject_result?;
-        let dirs = dirs_result?;
-
-        let n_files = modes.len();
-        if users.len() != n_files
-            || groups.len() != n_files
-            || digests.len() != n_files
-            || mtimes.len() != n_files
-            || sizes.len() != n_files
-            || flags.len() != n_files
-            || links.len() != n_files
-            || basenames.len() != n_files
-            || biject.len() != n_files
-        {
-            return Err(Error::InconsistentTagArrayLengths);
-        }
-
-        for i in 0..n_files {
-            let dir_index = biject[i] as usize;
-            let dirname = dirs
-                .get(dir_index)
-                .copied()
-                .ok_or_else(|| Error::InvalidTagIndex {
-                    tag: IndexTag::RPMTAG_DIRINDEXES.to_string(),
-                    index: biject[i],
-                    bound: dirs.len() as u32,
-                })?;
-            let digest = if digests[i].is_empty() {
-                None
-            } else {
-                Some(FileDigest::new(algorithm, digests[i])?)
-            };
-            let cap = caps
-                .as_ref()
-                .and_then(|c| c.get(i))
-                .map(|s| Cow::Borrowed(*s));
-            let ima_signature = ima_signatures
-                .as_ref()
-                .and_then(|s| s.get(i))
-                .map(|s| Cow::Borrowed(*s));
-            f(FileEntry {
-                dirname: Cow::Borrowed(dirname),
-                basename: Cow::Borrowed(basenames[i]),
-                user: Cow::Borrowed(users[i]),
-                group: Cow::Borrowed(groups[i]),
-                mode: modes[i].into(),
-                modified_at: crate::Timestamp(mtimes[i]),
-                digest,
-                flags: FileFlags::from_bits_retain(flags[i]),
-                size: sizes[i] as usize,
-                caps: cap,
-                linkto: if links[i].is_empty() {
-                    None
-                } else {
-                    Some(Cow::Borrowed(links[i]))
-                },
-                ima_signature,
-            })?;
-        }
-
         Ok(())
     }
 
@@ -2050,6 +1684,194 @@ impl PackageMetadata {
         Ok(SignatureReport {
             digests,
             signatures,
+        })
+    }
+}
+
+struct FileTagArrays<'a> {
+    algorithm: DigestAlgorithm,
+    modes: Vec<u16>,
+    users: Vec<&'a str>,
+    groups: Vec<&'a str>,
+    digests: Vec<&'a str>,
+    mtimes: Vec<u32>,
+    sizes: Vec<u64>,
+    flags: Vec<u32>,
+    links: Vec<&'a str>,
+    caps: Option<Vec<&'a str>>,
+    ima_signatures: Option<Vec<&'a str>>,
+    basenames: Vec<&'a str>,
+    biject: Vec<u32>,
+    dirs: Vec<&'a str>,
+}
+
+impl<'a> FileTagArrays<'a> {
+    /// Load all file-related tag arrays from the package metadata.
+    /// Returns `Ok(None)` if the package has no files.
+    fn load(meta: &'a PackageMetadata) -> Result<Option<Self>, Error> {
+        let algorithm = meta
+            .get_file_digest_algorithm()
+            .unwrap_or(DigestAlgorithm::Md5);
+
+        let modes = match meta
+            .header
+            .get_entry_data_as_u16_array(IndexTag::RPMTAG_FILEMODES)
+        {
+            Ok(modes) => modes,
+            Err(Error::TagNotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+
+        let users = meta
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEUSERNAME)?;
+        let groups = meta
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEGROUPNAME)?;
+        let digests = meta
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEDIGESTS)?;
+        let mtimes = meta
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEMTIMES)?;
+        let sizes = meta
+            .header
+            .get_entry_data_as_u64_array(IndexTag::RPMTAG_LONGFILESIZES)
+            .or_else(|_e| {
+                meta.header
+                    .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILESIZES)
+                    .map(|file_sizes| {
+                        file_sizes
+                            .into_iter()
+                            .map(|file_size| file_size as _)
+                            .collect::<Vec<u64>>()
+                    })
+            })?;
+        let flags = meta
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEFLAGS)?;
+        let links = meta
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILELINKTOS)?;
+
+        let caps = match meta
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILECAPS)
+        {
+            Ok(caps) => Some(caps),
+            Err(Error::TagNotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
+        let ima_signatures = match meta
+            .signature
+            .get_entry_data_as_string_array(IndexSignatureTag::RPMSIGTAG_FILESIGNATURES)
+        {
+            Ok(ima_signatures) => Some(ima_signatures),
+            Err(Error::TagNotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
+
+        let basenames_result = meta
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_BASENAMES);
+        let biject_result = meta
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_DIRINDEXES);
+        let dirs_result = meta
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_DIRNAMES);
+
+        if matches!(&basenames_result, Err(Error::TagNotFound(_)))
+            && matches!(&biject_result, Err(Error::TagNotFound(_)))
+            && matches!(&dirs_result, Err(Error::TagNotFound(_)))
+        {
+            return Ok(None);
+        }
+
+        let basenames = basenames_result?;
+        let biject = biject_result?;
+        let dirs = dirs_result?;
+
+        let n_files = modes.len();
+        if users.len() != n_files
+            || groups.len() != n_files
+            || digests.len() != n_files
+            || mtimes.len() != n_files
+            || sizes.len() != n_files
+            || flags.len() != n_files
+            || links.len() != n_files
+            || basenames.len() != n_files
+            || biject.len() != n_files
+        {
+            return Err(Error::InconsistentTagArrayLengths);
+        }
+
+        Ok(Some(FileTagArrays {
+            algorithm,
+            modes,
+            users,
+            groups,
+            digests,
+            mtimes,
+            sizes,
+            flags,
+            links,
+            caps,
+            ima_signatures,
+            basenames,
+            biject,
+            dirs,
+        }))
+    }
+
+    fn len(&self) -> usize {
+        self.modes.len()
+    }
+
+    fn entry(&self, i: usize) -> Result<FileEntry<'a>, Error> {
+        let dir_index = self.biject[i] as usize;
+        let dirname = self
+            .dirs
+            .get(dir_index)
+            .copied()
+            .ok_or_else(|| Error::InvalidTagIndex {
+                tag: IndexTag::RPMTAG_DIRINDEXES.to_string(),
+                index: self.biject[i],
+                bound: self.dirs.len() as u32,
+            })?;
+        let digest = if self.digests[i].is_empty() {
+            None
+        } else {
+            Some(FileDigest::new(self.algorithm, self.digests[i])?)
+        };
+        let cap = self
+            .caps
+            .as_ref()
+            .and_then(|c| c.get(i))
+            .map(|s| Cow::Borrowed(*s));
+        let ima_signature = self
+            .ima_signatures
+            .as_ref()
+            .and_then(|s| s.get(i))
+            .map(|s| Cow::Borrowed(*s));
+
+        Ok(FileEntry {
+            dirname: Cow::Borrowed(dirname),
+            basename: Cow::Borrowed(self.basenames[i]),
+            user: Cow::Borrowed(self.users[i]),
+            group: Cow::Borrowed(self.groups[i]),
+            mode: self.modes[i].into(),
+            modified_at: crate::Timestamp(self.mtimes[i]),
+            digest,
+            flags: FileFlags::from_bits_retain(self.flags[i]),
+            size: self.sizes[i] as usize,
+            caps: cap,
+            linkto: if self.links[i].is_empty() {
+                None
+            } else {
+                Some(Cow::Borrowed(self.links[i]))
+            },
+            ima_signature,
         })
     }
 }
