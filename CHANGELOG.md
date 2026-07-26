@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `PackageMetadata::find_file_entry()` looks up a single file entry by path without constructing all entries.
+
 ## 0.26.0
 
 ### Added
