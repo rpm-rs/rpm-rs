@@ -1177,3 +1177,36 @@ fn test_tag_not_found_display() {
         "expected tag name in error: {msg}"
     );
 }
+
+#[test]
+fn test_find_file_entry() -> Result<(), Box<dyn std::error::Error>> {
+    let pkg = Package::open(common::pkgs::v4::RPM_BASIC)?;
+
+    // Find an existing file
+    let entry = pkg
+        .metadata
+        .find_file_entry(Path::new("/etc/rpm-basic/example_config.toml"))?
+        .expect("config file should be found");
+    assert_eq!(entry.basename(), "example_config.toml");
+    assert_eq!(entry.dirname(), "/etc/rpm-basic/");
+    assert_eq!(entry.size(), 31);
+    assert!(entry.flags().contains(FileFlags::CONFIG));
+
+    // Nonexistent path returns None
+    assert!(
+        pkg.metadata
+            .find_file_entry(Path::new("/nonexistent/path"))?
+            .is_none()
+    );
+
+    // Empty package returns None
+    let empty = Package::open(common::pkgs::v4::RPM_EMPTY)?;
+    assert!(
+        empty
+            .metadata
+            .find_file_entry(Path::new("/anything"))?
+            .is_none()
+    );
+
+    Ok(())
+}

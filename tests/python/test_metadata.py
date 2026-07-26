@@ -253,6 +253,22 @@ class TestFiles:
         assert len(m.file_paths()) == 0
         assert len(m.file_entries()) == 0
 
+    def test_find_file_entry(self):
+        m = PackageMetadata.open(RPM_BASIC)
+        entry = m.find_file_entry("/etc/rpm-basic/example_config.toml")
+        assert entry is not None
+        assert isinstance(entry, FileEntry)
+        assert entry.path == "/etc/rpm-basic/example_config.toml"
+        assert entry.size == 31
+
+    def test_find_file_entry_not_found(self):
+        m = PackageMetadata.open(RPM_BASIC)
+        assert m.find_file_entry("/nonexistent/path") is None
+
+    def test_find_file_entry_empty_package(self):
+        m = PackageMetadata.open(RPM_EMPTY)
+        assert m.find_file_entry("/anything") is None
+
 
 class TestScriptlets:
     def test_scriptlets_present(self):

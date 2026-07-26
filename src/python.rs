@@ -952,6 +952,16 @@ impl PyPackageMetadata {
             .map_err(to_pyerr)
     }
 
+    /// Look up a single file entry by its full installation path.
+    ///
+    /// Returns ``None`` if the path is not found or the package has no files.
+    fn find_file_entry(&self, path: &str) -> PyResult<Option<PyFileEntry>> {
+        self.0
+            .find_file_entry(std::path::Path::new(path))
+            .map(|opt| opt.map(|e| PyFileEntry(e.into_owned())))
+            .map_err(to_pyerr)
+    }
+
     // --- Changelog ---
 
     /// List of changelog entries, most recent first.

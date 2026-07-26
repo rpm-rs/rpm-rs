@@ -1543,6 +1543,163 @@ impl PackageMetadata {
         Ok(result)
     }
 
+    /// Look up a single file entry by its full installation path.
+    ///
+    /// Returns `Ok(None)` if the path is not found or the package has no files.
+    /// This avoids constructing `FileEntry` objects for every file in the package.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use std::path::Path;
+    /// let package = rpm::Package::open("tests/assets/RPMS/v4/rpm-basic-2.3.4-5.el9.noarch.rpm")?;
+    /// if let Some(entry) = package.metadata.find_file_entry(Path::new("/usr/bin/rpm-basic"))? {
+    ///     println!("{} is {} bytes", entry.path().display(), entry.size());
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub fn find_file_entry(&self, path: &Path) -> Result<Option<FileEntry<'_>>, Error> {
+        let search_basename = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => return Ok(None),
+        };
+        let search_dirname = match path.parent().and_then(|p| p.to_str()) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        // RPM stores dirnames with a trailing slash
+        let search_dirname_slash = if search_dirname.ends_with('/') {
+            Cow::Borrowed(search_dirname)
+        } else {
+            Cow::Owned(format!("{search_dirname}/"))
+        };
+
+        let basenames = match self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_BASENAMES)
+        {
+            Ok(b) => b,
+            Err(Error::TagNotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let biject = self
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_DIRINDEXES)?;
+        let dirs = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_DIRNAMES)?;
+
+        // Find the dir index that matches the search dirname
+        let target_dir_index = match dirs
+            .iter()
+            .position(|d| *d == search_dirname_slash.as_ref())
+        {
+            Some(idx) => idx as u32,
+            None => return Ok(None),
+        };
+
+        // Find the file index where both basename and dir_index match
+        let file_index = match basenames
+            .iter()
+            .zip(biject.iter())
+            .position(|(bn, di)| *bn == search_basename && *di == target_dir_index)
+        {
+            Some(idx) => idx,
+            None => return Ok(None),
+        };
+
+        // Read the metadata arrays to construct the FileEntry at file_index
+        let algorithm = self
+            .get_file_digest_algorithm()
+            .unwrap_or(DigestAlgorithm::Md5);
+
+        let modes = self
+            .header
+            .get_entry_data_as_u16_array(IndexTag::RPMTAG_FILEMODES)?;
+        let users = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEUSERNAME)?;
+        let groups = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEGROUPNAME)?;
+        let digests = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEDIGESTS)?;
+        let mtimes = self
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEMTIMES)?;
+        let sizes = self
+            .header
+            .get_entry_data_as_u64_array(IndexTag::RPMTAG_LONGFILESIZES)
+            .or_else(|_e| {
+                self.header
+                    .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILESIZES)
+                    .map(|file_sizes| {
+                        file_sizes
+                            .into_iter()
+                            .map(|file_size| file_size as _)
+                            .collect::<Vec<u64>>()
+                    })
+            })?;
+        let flags = self
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEFLAGS)?;
+        let links = self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILELINKTOS)?;
+        let caps = match self
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILECAPS)
+        {
+            Ok(caps) => Some(caps),
+            Err(Error::TagNotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
+        let ima_signatures = match self
+            .signature
+            .get_entry_data_as_string_array(IndexSignatureTag::RPMSIGTAG_FILESIGNATURES)
+        {
+            Ok(ima_signatures) => Some(ima_signatures),
+            Err(Error::TagNotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
+
+        let i = file_index;
+        let digest = if digests[i].is_empty() {
+            None
+        } else {
+            Some(FileDigest::new(algorithm, digests[i])?)
+        };
+        let cap = caps
+            .as_ref()
+            .and_then(|c| c.get(i))
+            .map(|s| Cow::Borrowed(*s));
+        let ima_signature = ima_signatures
+            .as_ref()
+            .and_then(|s| s.get(i))
+            .map(|s| Cow::Borrowed(*s));
+
+        Ok(Some(FileEntry {
+            dirname: Cow::Borrowed(dirs[target_dir_index as usize]),
+            basename: Cow::Borrowed(basenames[i]),
+            user: Cow::Borrowed(users[i]),
+            group: Cow::Borrowed(groups[i]),
+            mode: modes[i].into(),
+            modified_at: crate::Timestamp(mtimes[i]),
+            digest,
+            flags: FileFlags::from_bits_retain(flags[i]),
+            size: sizes[i] as usize,
+            caps: cap,
+            linkto: if links[i].is_empty() {
+                None
+            } else {
+                Some(Cow::Borrowed(links[i]))
+            },
+            ima_signature,
+        }))
+    }
+
     /// Invoke a callback for each file entry in the RPM, without collecting them all into memory.
     ///
     /// This is useful when processing large packages where allocating a `Vec` of all entries
