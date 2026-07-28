@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Package::decompress_payload()` decompresses the payload in-place, replacing compressed bytes with the raw archive.
+- `DigestReport` now includes ALT payload digest fields (`payload_sha256_alt`, `payload_sha512_alt`, `payload_sha3_256_alt`) for verifying uncompressed payloads. `DigestReport::result()` uses "either-set" semantics — the payload is valid if either the primary (compressed) or ALT (uncompressed) digest set passes.
 - `PackageMetadata::find_file_entry()` looks up a single file entry by path without constructing all entries.
 
 ## 0.26.0

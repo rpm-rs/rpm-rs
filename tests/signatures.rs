@@ -673,9 +673,16 @@ fn test_verify_digests_standalone() -> Result<(), Box<dyn std::error::Error>> {
     assert!(report.payload_sha256.is_verified());
     assert!(report.payload_sha512.is_not_present());
     assert!(report.payload_sha3_256.is_not_present());
+    // v4 fixtures built by rpmbuild may not have ALT tags
+    assert!(
+        report.payload_sha256_alt.is_not_present()
+            || report.payload_sha256_alt.is_verified()
+            || report.payload_sha256_alt.is_mismatch()
+    );
     assert!(report.is_ok());
 
-    // check_digests() on a v6 package: SHA3-256 present, SHA-1 not present
+    // check_digests() on a v6 package (uncompressed): SHA3-256 present, SHA-1 not present
+    // Both primary and ALT digests verify because payload == uncompressed archive
     let report = rpm::Package::open(common::pkgs::v6::RPM_BASIC)?.check_digests()?;
     assert!(report.header_sha256.is_verified());
     assert!(report.header_sha3_256.is_verified());
@@ -683,6 +690,9 @@ fn test_verify_digests_standalone() -> Result<(), Box<dyn std::error::Error>> {
     assert!(report.payload_sha256.is_verified());
     assert!(report.payload_sha512.is_verified());
     assert!(report.payload_sha3_256.is_verified());
+    assert!(report.payload_sha256_alt.is_verified());
+    assert!(report.payload_sha512_alt.is_verified());
+    assert!(report.payload_sha3_256_alt.is_verified());
     assert!(report.is_ok());
 
     Ok(())
@@ -1108,6 +1118,74 @@ fn test_clear_signatures_preserves_digests_and_file_signatures()
     Ok(())
 }
 
+/// Test that decompress_payload() decompresses in-place and ALT digests verify
+#[test]
+fn test_decompress_payload_and_verify() -> Result<(), Box<dyn std::error::Error>> {
+    let mut pkg = rpm::Package::open(common::pkgs::v6::compressed::RPM_BASIC_ZSTD)?;
+
+    // Before decompression: primary digests verify
+    let report = pkg.check_digests()?;
+    assert!(report.payload_sha256.is_verified());
+    assert!(report.payload_sha512.is_verified());
+    assert!(report.payload_sha3_256.is_verified());
+    // ALT digests mismatch (payload is compressed, ALT is for uncompressed)
+    assert!(report.payload_sha256_alt.is_mismatch());
+    assert!(report.payload_sha512_alt.is_mismatch());
+    assert!(report.payload_sha3_256_alt.is_mismatch());
+    // Overall verification passes (primary set passes)
+    assert!(report.is_ok());
+    pkg.verify_digests()?;
+
+    // Decompress
+    pkg.decompress_payload()?;
+
+    // After decompression: ALT digests verify, primary digests mismatch
+    let report = pkg.check_digests()?;
+    assert!(report.payload_sha256.is_mismatch());
+    assert!(report.payload_sha256_alt.is_verified());
+    assert!(report.payload_sha512_alt.is_verified());
+    assert!(report.payload_sha3_256_alt.is_verified());
+    // Overall verification passes (ALT set passes)
+    assert!(report.is_ok());
+    pkg.verify_digests()?;
+
+    // Header digests should still be fine
+    assert!(report.header_sha256.is_verified());
+    assert!(report.header_sha3_256.is_verified());
+
+    Ok(())
+}
+
+/// Test decompress_payload() with different compression formats
+#[test]
+fn test_decompress_payload_formats() -> Result<(), Box<dyn std::error::Error>> {
+    for path in [
+        common::pkgs::v6::compressed::RPM_BASIC_ZSTD,
+        common::pkgs::v6::compressed::RPM_BASIC_GZIP,
+        common::pkgs::v6::compressed::RPM_BASIC_XZ,
+    ] {
+        let mut pkg = rpm::Package::open(path)?;
+        pkg.verify_digests()?;
+        pkg.decompress_payload()?;
+        pkg.verify_digests()?;
+    }
+    Ok(())
+}
+
+/// Test that decompress_payload() is a no-op for uncompressed packages
+#[test]
+fn test_decompress_payload_noop_for_uncompressed() -> Result<(), Box<dyn std::error::Error>> {
+    let mut pkg = rpm::Package::open(common::pkgs::v6::RPM_BASIC)?;
+    let original_payload = pkg.payload.clone();
+
+    pkg.decompress_payload()?;
+
+    assert_eq!(pkg.payload, original_payload);
+    pkg.verify_digests()?;
+
+    Ok(())
+}
+
 mod tampering {
     use super::*;
 
@@ -1178,6 +1256,29 @@ mod tampering {
         assert!(report.payload_sha256.is_mismatch());
         assert!(report.header_sha256.is_verified());
         assert!(report.header_sha3_256.is_verified());
+
+        Ok(())
+    }
+
+    /// Test that tampering with a decompressed payload is detected
+    #[test]
+    fn test_tampered_decompressed_payload_detected() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pkg = rpm::Package::open(common::pkgs::v6::compressed::RPM_BASIC_ZSTD)?;
+
+        pkg.decompress_payload()?;
+        pkg.verify_digests()?;
+
+        // Tamper with the decompressed payload
+        if let Some(byte) = pkg.payload.last_mut() {
+            *byte ^= 0xFF;
+        }
+
+        // Both primary and ALT should mismatch
+        let report = pkg.check_digests()?;
+        assert!(report.payload_sha256.is_mismatch());
+        assert!(report.payload_sha256_alt.is_mismatch());
+        assert!(!report.is_ok());
+        assert!(pkg.verify_digests().is_err());
 
         Ok(())
     }

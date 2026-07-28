@@ -107,6 +107,12 @@ pub struct DigestReport {
     pub payload_sha512: DigestStatus,
     /// SHA3-256 of the compressed payload (v6 packages).
     pub payload_sha3_256: DigestStatus,
+    /// SHA-256 of the uncompressed payload archive.
+    pub payload_sha256_alt: DigestStatus,
+    /// SHA-512 of the uncompressed payload archive (v6 packages).
+    pub payload_sha512_alt: DigestStatus,
+    /// SHA3-256 of the uncompressed payload archive (v6 packages).
+    pub payload_sha3_256_alt: DigestStatus,
 }
 
 impl DigestReport {
@@ -122,23 +128,30 @@ impl DigestReport {
         !self.payload_sha256.is_not_present()
             || !self.payload_sha512.is_not_present()
             || !self.payload_sha3_256.is_not_present()
+            || !self.payload_sha256_alt.is_not_present()
+            || !self.payload_sha512_alt.is_not_present()
+            || !self.payload_sha3_256_alt.is_not_present()
     }
 
     /// Collapse into a `Result`: fails if any digest mismatched or if no
     /// header digests are present at all.
     ///
-    /// Digests that are [`DigestStatus::NotPresent`] are **not** individually
-    /// considered failures, but at least one header digest must be present.
+    /// Header digests are strict: any mismatch is a failure.
+    ///
+    /// Payload digests use "either-set" semantics: the primary set (compressed
+    /// payload digests) and the ALT set (uncompressed payload digests) are
+    /// evaluated independently. A set passes if it contains at least one
+    /// [`DigestStatus::Verified`] and no [`DigestStatus::Mismatch`] entries.
+    /// The payload is considered valid if either set passes. This allows
+    /// verification to succeed both before and after
+    /// [`Package::decompress_payload`].
     pub fn result(&self) -> Result<(), Error> {
-        let all = [
+        let header_digests: [(&str, &DigestStatus); 3] = [
             ("header SHA1", &self.header_sha1),
             ("header SHA-256", &self.header_sha256),
             ("header SHA3-256", &self.header_sha3_256),
-            ("payload SHA-256", &self.payload_sha256),
-            ("payload SHA-512", &self.payload_sha512),
-            ("payload SHA3-256", &self.payload_sha3_256),
         ];
-        for (label, status) in all {
+        for (label, status) in &header_digests {
             if let DigestStatus::Mismatch { expected, actual } = status {
                 return Err(Error::DigestMismatchError {
                     digest: label,
@@ -147,6 +160,38 @@ impl DigestReport {
                 });
             }
         }
+
+        let primary: [(&str, &DigestStatus); 3] = [
+            ("payload SHA-256", &self.payload_sha256),
+            ("payload SHA-512", &self.payload_sha512),
+            ("payload SHA3-256", &self.payload_sha3_256),
+        ];
+        let alt: [(&str, &DigestStatus); 3] = [
+            ("payload SHA-256 (alt)", &self.payload_sha256_alt),
+            ("payload SHA-512 (alt)", &self.payload_sha512_alt),
+            ("payload SHA3-256 (alt)", &self.payload_sha3_256_alt),
+        ];
+
+        let set_passes = |set: &[(&str, &DigestStatus)]| -> bool {
+            let has_verified = set.iter().any(|(_, s)| s.is_verified());
+            let has_mismatch = set.iter().any(|(_, s)| s.is_mismatch());
+            has_verified && !has_mismatch
+        };
+
+        if set_passes(&primary) || set_passes(&alt) {
+            return Ok(());
+        }
+
+        for (label, status) in primary.iter().chain(alt.iter()) {
+            if let DigestStatus::Mismatch { expected, actual } = status {
+                return Err(Error::DigestMismatchError {
+                    digest: label,
+                    expected: expected.clone(),
+                    actual: actual.clone(),
+                });
+            }
+        }
+
         Ok(())
     }
 
@@ -318,6 +363,29 @@ impl Package {
     /// Delegates to [`PackageMetadata::header_bytes`].
     pub fn header_bytes(&self) -> Result<Vec<u8>, Error> {
         self.metadata.header_bytes()
+    }
+
+    /// Decompress the payload in-place, replacing the compressed bytes with
+    /// the raw (uncompressed) archive.
+    ///
+    /// After this call, `self.payload` contains the uncompressed CPIO archive.
+    /// The package metadata is **not** modified — the `PAYLOADCOMPRESSOR` tag
+    /// and primary digest tags still reflect the original compressed form.
+    /// Use [`check_digests`](Self::check_digests) with the ALT payload digest
+    /// fields to verify the uncompressed payload.
+    ///
+    /// This is a no-op if the payload compressor is already [`CompressionType::None`].
+    #[cfg(feature = "payload")]
+    pub fn decompress_payload(&mut self) -> Result<(), Error> {
+        let compressor = self.metadata.get_payload_compressor()?;
+        if compressor == CompressionType::None {
+            return Ok(());
+        }
+        let mut decompressed = Vec::new();
+        crate::decompress_stream(compressor, io::Cursor::new(self.payload.as_slice()))?
+            .read_to_end(&mut decompressed)?;
+        self.payload = decompressed;
+        Ok(())
     }
 
     /// Generate a fresh, unsigned signature header
@@ -649,6 +717,29 @@ impl Package {
             self.metadata
                 .header
                 .get_entry_data_as_string(IndexTag::RPMTAG_PAYLOAD_SHA3_256),
+            self.payload.as_slice(),
+        );
+
+        // --- Payload ALT digests (uncompressed archive, from main header) ---
+
+        report.payload_sha256_alt = DigestStatus::check_digest_against_tag::<sha2::Sha256>(
+            self.metadata
+                .header
+                .get_entry_data_as_string(IndexTag::RPMTAG_PAYLOADSHA256ALT),
+            self.payload.as_slice(),
+        );
+
+        report.payload_sha512_alt = DigestStatus::check_digest_against_tag::<sha2::Sha512>(
+            self.metadata
+                .header
+                .get_entry_data_as_string(IndexTag::RPMTAG_PAYLOAD_SHA512_ALT),
+            self.payload.as_slice(),
+        );
+
+        report.payload_sha3_256_alt = DigestStatus::check_digest_against_tag::<sha3::Sha3_256>(
+            self.metadata
+                .header
+                .get_entry_data_as_string(IndexTag::RPMTAG_PAYLOAD_SHA3_256_ALT),
             self.payload.as_slice(),
         );
 
@@ -1624,6 +1715,9 @@ impl PackageMetadata {
             payload_sha256: DigestStatus::NotChecked,
             payload_sha512: DigestStatus::NotChecked,
             payload_sha3_256: DigestStatus::NotChecked,
+            payload_sha256_alt: DigestStatus::NotChecked,
+            payload_sha512_alt: DigestStatus::NotChecked,
+            payload_sha3_256_alt: DigestStatus::NotChecked,
         })
     }
 
