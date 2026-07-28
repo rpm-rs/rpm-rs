@@ -1347,6 +1347,17 @@ impl PyPackage {
         self.0.check_digests().map(PyDigestReport).map_err(to_pyerr)
     }
 
+    /// Decompress the payload in-place, replacing compressed bytes with
+    /// the raw (uncompressed) archive.
+    ///
+    /// The package metadata is not modified. Use ``check_digests()`` with the
+    /// ALT payload digest fields to verify the uncompressed payload.
+    ///
+    /// No-op if the payload is already uncompressed.
+    fn decompress_payload(&mut self) -> PyResult<()> {
+        self.0.decompress_payload().map_err(to_pyerr)
+    }
+
     /// Apply a pre-computed signature to this package.
     ///
     /// The raw OpenPGP signature bytes are added to the signature header.
@@ -1785,6 +1796,24 @@ impl PyDigestReport {
     #[getter]
     fn payload_sha3_256(&self) -> PyDigestStatus {
         PyDigestStatus(self.0.payload_sha3_256.clone())
+    }
+
+    /// SHA-256 of the uncompressed payload archive.
+    #[getter]
+    fn payload_sha256_alt(&self) -> PyDigestStatus {
+        PyDigestStatus(self.0.payload_sha256_alt.clone())
+    }
+
+    /// SHA-512 of the uncompressed payload archive (v6 packages).
+    #[getter]
+    fn payload_sha512_alt(&self) -> PyDigestStatus {
+        PyDigestStatus(self.0.payload_sha512_alt.clone())
+    }
+
+    /// SHA3-256 of the uncompressed payload archive (v6 packages).
+    #[getter]
+    fn payload_sha3_256_alt(&self) -> PyDigestStatus {
+        PyDigestStatus(self.0.payload_sha3_256_alt.clone())
     }
 
     /// True if at least one header digest was present.
