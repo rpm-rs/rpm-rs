@@ -1121,6 +1121,14 @@ fn test_clear_signatures_preserves_digests_and_file_signatures()
 /// Test that decompress_payload() decompresses in-place and ALT digests verify
 #[test]
 fn test_decompress_payload_and_verify() -> Result<(), Box<dyn std::error::Error>> {
+    let sig_content_length = |sig: &rpm::Header<rpm::IndexSignatureTag>| -> Option<u64> {
+        sig.get_entry_data_as_u32(rpm::IndexSignatureTag::RPMSIGTAG_SIZE)
+            .map(|v| v as u64)
+            .or_else(|_| sig.get_entry_data_as_u64(rpm::IndexSignatureTag::RPMSIGTAG_LONGSIZE))
+            .ok()
+    };
+
+    // --- v6 compressed fixture: full ALT digest coverage ---
     let mut pkg = rpm::Package::open(common::pkgs::v6::compressed::RPM_BASIC_ZSTD)?;
 
     // Before decompression: primary digests verify
@@ -1152,6 +1160,49 @@ fn test_decompress_payload_and_verify() -> Result<(), Box<dyn std::error::Error>
     // Header digests should still be fine
     assert!(report.header_sha256.is_verified());
     assert!(report.header_sha3_256.is_verified());
+
+    // Signature header should have been rebuilt: legacy header+payload tags stripped
+    let sig = &pkg.metadata.signature;
+    assert!(
+        !sig.entry_is_present(rpm::IndexSignatureTag::RPMSIGTAG_MD5),
+        "legacy MD5 tag should be stripped"
+    );
+    assert!(
+        !sig.entry_is_present(rpm::IndexSignatureTag::RPMSIGTAG_PGP),
+        "legacy PGP tag should be stripped"
+    );
+    assert!(
+        !sig.entry_is_present(rpm::IndexSignatureTag::RPMSIGTAG_GPG),
+        "legacy GPG tag should be stripped"
+    );
+
+    // --- v4 built package: content-length update ---
+    let mut pkg = rpm::PackageBuilder::new("foo", "1.0.0", "MIT", "x86_64", "decompress test")
+        .using_config(rpm::BuildConfig::v4().compression(rpm::CompressionType::Zstd))
+        .build()?;
+    pkg.verify_digests()?;
+
+    let content_length_before = sig_content_length(&pkg.metadata.signature);
+    assert!(
+        content_length_before.is_some(),
+        "v4 package should have content-length"
+    );
+
+    pkg.decompress_payload()?;
+    pkg.verify_digests()?;
+
+    let header_bytes = pkg.header_bytes()?;
+    let expected_content_length = header_bytes.len() as u64 + pkg.payload.len() as u64;
+    let content_length_after = sig_content_length(&pkg.metadata.signature);
+    assert_eq!(
+        content_length_after,
+        Some(expected_content_length),
+        "content-length should reflect decompressed payload"
+    );
+    assert_ne!(
+        content_length_after, content_length_before,
+        "content-length should have changed after decompression"
+    );
 
     Ok(())
 }
