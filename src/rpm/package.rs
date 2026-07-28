@@ -369,10 +369,14 @@ impl Package {
     /// the raw (uncompressed) archive.
     ///
     /// After this call, `self.payload` contains the uncompressed CPIO archive.
-    /// The package metadata is **not** modified — the `PAYLOADCOMPRESSOR` tag
-    /// and primary digest tags still reflect the original compressed form.
-    /// Use [`check_digests`](Self::check_digests) with the ALT payload digest
+    /// The main header is **not** modified — the `PAYLOADCOMPRESSOR` tag and
+    /// primary digest tags still reflect the original compressed form. Use
+    /// [`check_digests`](Self::check_digests) with the ALT payload digest
     /// fields to verify the uncompressed payload.
+    ///
+    /// The signature header is rebuilt to update the header+payload length and strip
+    /// legacy header+payload tags (MD5, PGP/GPG) that are invalidated by the
+    /// payload change. Header-only signatures and digests are preserved.
     ///
     /// This is a no-op if the payload compressor is already [`CompressionType::None`].
     #[cfg(feature = "payload")]
@@ -385,6 +389,13 @@ impl Package {
         crate::decompress_stream(compressor, io::Cursor::new(self.payload.as_slice()))?
             .read_to_end(&mut decompressed)?;
         self.payload = decompressed;
+
+        let header_bytes = self.header_bytes()?;
+        let content_length = header_bytes.len() as u64 + self.payload.len() as u64;
+        self.metadata.signature = SignatureHeaderBuilder::from_existing(&self.metadata.signature)?
+            .set_content_length(content_length)
+            .build()?;
+
         Ok(())
     }
 
