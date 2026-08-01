@@ -19,13 +19,14 @@ is easy to get wrong from memory.
 ## Building & Testing
 
 ```bash
-cargo test --all-features        # full test suite
-cargo test                       # default features only
-cargo clippy --all-features -- -D warnings
+cargo test                       # default rPGP backend
+cargo test --no-default-features --features signature-sequoia,payload,gzip-compression,zstd-compression,xz-compression,bzip2-compression,zstdmt
+cargo test --no-default-features # minimal build
+cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
-CI tests the full feature matrix: `--all-features`, `--no-default-features`, across Linux/macOS/Windows. Changes must compile under all combinations.
+CI tests the rPGP and Sequoia signature backends separately, plus `--no-default-features`, across Linux/macOS/Windows. The two signature backends are mutually exclusive and must not be enabled together.
 
 ## Feature flags
 
@@ -55,12 +56,12 @@ Fixture RPMs and signing keys live in `tests/assets/`, organized by signature ve
 
 - CHANGELOG.md follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format. Add entries under `## Unreleased` with appropriate subsection (`Added`, `Fixed`, `Changed`, `Removed`).
 - Commits should explain WHAT and WHY, and reference issues with "Closes #N".
-- Each commit should pass `cargo fmt` and `cargo clippy --all-features -- -D warnings`.
+- Each commit should pass `cargo fmt` and Clippy with each applicable signature backend.
 - The project uses semantic versioning.
 
 ## Common pitfalls
 
-- **Feature combinations**: Code that compiles with `--all-features` may not compile with `--no-default-features`. Always check both.
+- **Feature combinations**: Check the rPGP and Sequoia backends separately, and always check `--no-default-features`.
 - **Binary parsing**: The crate uses `nom` for binary parsing. RPM is a complex binary format with multiple header sections (lead, signature header, main header, payload). Understand the section you're modifying before changing parser code.
 - **Signature versions**: RPM v4 and v6 signatures have different tag sets and structures. v6 adds post-quantum algorithm support. Changes to signature handling must account for both versions.
 - **`#[non_exhaustive]` on errors**: The `Error` enum is non-exhaustive. New error variants can be added without a major version bump, but downstream match arms must have wildcards.

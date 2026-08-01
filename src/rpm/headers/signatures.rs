@@ -2,19 +2,17 @@
 
 use super::*;
 
-#[cfg(feature = "signature-pgp")]
+#[cfg(feature = "signature-meta")]
 use std::collections::HashSet;
 use std::default::Default;
 
 use crate::RpmFormat;
 use crate::constants::*;
-#[cfg(feature = "signature-pgp")]
-use crate::signature::pgp::Verifier;
+#[cfg(feature = "signature-meta")]
+use crate::signature::{SignatureAlgorithm, parse_signature_info};
 
 use base64::prelude::*;
 use digest::Digest;
-#[cfg(feature = "signature-pgp")]
-use pgp::crypto::public_key::PublicKeyAlgorithm;
 
 /// base signature header builder
 pub struct SignatureHeaderBuilder {
@@ -43,7 +41,7 @@ pub(crate) fn decode_sig(signature: &str) -> Result<Vec<u8>, crate::Error> {
         .map_err(|e| crate::Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
 }
 
-#[cfg(feature = "signature-pgp")]
+#[cfg(feature = "signature-meta")]
 pub(crate) fn encode_sig(signature: &[u8]) -> String {
     BASE64_STANDARD.encode(signature)
 }
@@ -157,7 +155,7 @@ impl SignatureHeaderBuilder {
     pub fn build(self) -> Result<Header<IndexSignatureTag>, crate::Error> {
         let mut entries = Vec::new();
 
-        #[cfg(feature = "signature-pgp")]
+        #[cfg(feature = "signature-meta")]
         if !self.openpgp_signatures.is_empty() {
             let mut openpgp_signatures = Vec::new();
             let mut legacy_sig = None;
@@ -167,25 +165,24 @@ impl SignatureHeaderBuilder {
             // precedence when deduplicating by issuer fingerprint, and the
             // legacy signature tag is set from the newest matching signature.
             for sig_bytes in self.openpgp_signatures.iter().rev() {
-                let signature = Verifier::parse_signature(sig_bytes)?;
+                let info = parse_signature_info(sig_bytes)?;
 
                 // Deduplicate: keep only the newest signature per key
-                if let Some(fp) = signature.issuer_fingerprint().first()
-                    && !seen_fingerprints.insert(format!("{fp:x}"))
+                if let Some(fp) = info.fingerprint()
+                    && !seen_fingerprints.insert(fp.to_owned())
                 {
                     continue;
                 }
 
                 if legacy_sig.is_none() {
-                    let legacy_sig_tag = match signature
-                        .config()
-                        .ok_or(crate::Error::UnknownVersionSignature)?
-                        .pub_alg
-                    {
-                        PublicKeyAlgorithm::RSA => Some(IndexSignatureTag::RPMSIGTAG_RSA),
-                        PublicKeyAlgorithm::ECDSA
-                        | PublicKeyAlgorithm::EdDSALegacy
-                        | PublicKeyAlgorithm::Ed25519 => Some(IndexSignatureTag::RPMSIGTAG_DSA),
+                    let legacy_sig_tag = match info.algorithm() {
+                        Some(SignatureAlgorithm::RSA) => Some(IndexSignatureTag::RPMSIGTAG_RSA),
+                        Some(
+                            SignatureAlgorithm::ECDSA
+                            | SignatureAlgorithm::EdDSALegacy
+                            | SignatureAlgorithm::Ed25519
+                            | SignatureAlgorithm::Ed448,
+                        ) => Some(IndexSignatureTag::RPMSIGTAG_DSA),
                         _ => None,
                     };
                     if let Some(legacy_sig_tag) = legacy_sig_tag {

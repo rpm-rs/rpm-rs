@@ -487,3 +487,8 @@ pub use crate::rpm::*;
 
 #[cfg(feature = "python")]
 pub mod python;
+#[cfg(all(feature = "signature-pgp", feature = "signature-sequoia"))]
+compile_error!(
+    "the `signature-pgp` and `signature-sequoia` features are mutually exclusive; \
+     disable default features before enabling `signature-sequoia`"
+);

@@ -68,9 +68,9 @@ pub enum Error {
     #[error("signature packet found, but no version was specified")]
     UnknownVersionSignature,
 
-    #[cfg(feature = "signature-pgp")]
+    #[cfg(any(feature = "signature-pgp", feature = "signature-sequoia"))]
     #[error("error creating signature: {0}")]
-    SignError(#[source] pgp::errors::Error),
+    SignError(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     #[error("error parsing keys, failed to parse bytes as utf8 for ascii armored parsing")]
     KeyLoadUtf8Error(
@@ -79,23 +79,19 @@ pub enum Error {
         Utf8Error,
     ),
 
-    #[cfg(feature = "signature-pgp")]
+    #[cfg(any(feature = "signature-pgp", feature = "signature-sequoia"))]
     #[error("errors parsing keys, failed to parse bytes as ascii armored key")]
-    KeyLoadSecretKeyError(
-        #[from]
-        #[source]
-        pgp::errors::Error,
-    ),
+    KeyLoadSecretKeyError(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     #[cfg(feature = "signature-pgp")]
     #[error("key binding signature verification failed: {0}")]
     KeyBindingVerificationError(pgp::errors::Error),
 
-    #[cfg(feature = "signature-pgp")]
+    #[cfg(any(feature = "signature-pgp", feature = "signature-sequoia"))]
     #[error("error verifying signature with key {key_ref}: {source}")]
     VerificationError {
         #[source]
-        source: pgp::errors::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
         key_ref: String,
     },
 

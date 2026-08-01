@@ -9,7 +9,7 @@ Before marking a PR as ready for review, ensure:
 * Commits are cleanly separated and have useful messages that explain WHAT changed and WHY.
 * A changelog entry has been added to CHANGELOG.md under `## Unreleased`.
 * Code has been appropriately documented (doc comments, etc.)
-* Test coverage is excellent and passes with `--all-features` enabled.
+* Test coverage is excellent and passes with each signature backend enabled separately.
 * Reference related issues with "Closes #N" at the bottom of commit messages.
 
 ## AI-assisted contributions policy

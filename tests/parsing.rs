@@ -44,7 +44,10 @@ fn test_package_segment_boundaries() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(all(feature = "payload", feature = "signature-meta"))]
     {
+        #[cfg(feature = "signature-pgp")]
         use rpm::signature::pgp::Signer;
+        #[cfg(feature = "signature-sequoia")]
+        use rpm::signature::sequoia::Signer;
         let signer = Signer::from_asc_file(common::keys::v4::RSA_4K_PRIVATE)?;
         let constructed_pkg_with_sig =
             rpm::PackageBuilder::new("empty-package", "0", "MIT", "x86_64", "")
