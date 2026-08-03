@@ -60,7 +60,8 @@ jobs:
           - stable
           - 1.88.0
         flags:
-          - "--all-features"
+          - "--no-default-features --features signature-pgp,payload,gzip-compression,zstd-compression,xz-compression,bzip2-compression,zstdmt"
+          - "--no-default-features --features signature-sequoia,payload,gzip-compression,zstd-compression,xz-compression,bzip2-compression,zstdmt"
           - "--no-default-features"
         os:
           - "ubuntu-latest"
@@ -160,4 +161,3 @@ jobs:
 
       - run: cargo install cargo-tarpaulin
       - run: cargo tarpaulin --out xml
-

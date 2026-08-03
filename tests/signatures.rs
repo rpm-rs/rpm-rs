@@ -2,12 +2,18 @@ use std::fs;
 use std::path::Path;
 
 use hex;
-use rpm::{
-    self,
-    signature::pgp::{Signer, Verifier},
-};
+use rpm::{self};
+
+#[cfg(feature = "signature-pgp")]
+use rpm::signature::pgp::{Signer, Verifier};
+#[cfg(feature = "signature-sequoia")]
+use rpm::signature::sequoia::{Signer, Verifier};
 
 mod common;
+
+fn test_timestamp() -> rpm::Timestamp {
+    rpm::Timestamp(1_780_000_000)
+}
 
 /// Resign an already-signed package with new keys, and verify it with the new keys
 #[test]
@@ -70,14 +76,16 @@ fn test_rpm_file_signatures_resign() -> Result<(), Box<dyn std::error::Error>> {
         "v6_eddsa_resigned_pkg.rpm",
     )?;
 
-    // test v6 ML-DSA
+    #[cfg(feature = "signature-pgp")]
     resign_and_verify_with_keys(
         pkg_path.as_ref(),
         &fs::read(common::keys::v6::MLDSA65_ED25519_PRIVATE)?,
         None,
         &fs::read(common::keys::v6::MLDSA65_ED25519_PUBLIC)?,
         "v6_mldsa_resigned_pkg.rpm",
-    )
+    )?;
+
+    Ok(())
 }
 
 /// Test parsing packages that were built and signed by RPM
@@ -115,7 +123,7 @@ fn parse_externally_signed_rpm_and_verify() -> Result<(), Box<dyn std::error::Er
         common::keys::v6::ED25519_PUBLIC,
     )?;
 
-    // v6 ML-DSA
+    #[cfg(feature = "signature-pgp")]
     open_and_verify(
         common::pkgs::v6::RPM_BASIC_MLDSA_SIGNED,
         common::keys::v6::MLDSA65_ED25519_PUBLIC,
@@ -320,6 +328,7 @@ fn test_cross_version_resign() -> Result<(), Box<dyn std::error::Error>> {
         "cross_v4_with_v6_eddsa_resigned_pkg.rpm",
     )?;
 
+    #[cfg(feature = "signature-pgp")]
     resign_and_verify_with_keys(
         v4_pkg_path.as_ref(),
         &fs::read(common::keys::v6::MLDSA65_ED25519_PRIVATE)?,
@@ -389,7 +398,7 @@ fn resign_and_verify_with_keys(
     if let Some(passphrase) = signing_key_passphrase {
         signer = signer.with_key_passphrase(passphrase);
     }
-    package.sign_with_timestamp(&signer, 1_600_000_000)?;
+    package.sign_with_timestamp(&signer, test_timestamp())?;
 
     let out_file = Path::new(common::CARGO_OUT_DIR).join(pkg_out_path.as_ref());
     package.write_file(&out_file)?;
@@ -430,13 +439,17 @@ mod keyring {
         let keyring_verifier = Verifier::from_asc_file(common::keys::v4::KEYRING_PUBLIC)?;
         pkg.verify_signature(&keyring_verifier)?;
 
-        // v6
-        let keyring_signer = Signer::from_asc_bytes(&fs::read(common::keys::v6::KEYRING_PRIVATE)?)?;
-        let pkg = rpm::PackageBuilder::new("foo", "1.0.0", "MIT", "x86_64", "keyring signer test")
-            .build_and_sign(&keyring_signer)?;
+        #[cfg(feature = "signature-pgp")]
+        {
+            let keyring_signer =
+                Signer::from_asc_bytes(&fs::read(common::keys::v6::KEYRING_PRIVATE)?)?;
+            let pkg =
+                rpm::PackageBuilder::new("foo", "1.0.0", "MIT", "x86_64", "keyring signer test")
+                    .build_and_sign(&keyring_signer)?;
 
-        let keyring_verifier = Verifier::from_asc_file(common::keys::v6::KEYRING_PUBLIC)?;
-        pkg.verify_signature(&keyring_verifier)?;
+            let keyring_verifier = Verifier::from_asc_file(common::keys::v6::KEYRING_PUBLIC)?;
+            pkg.verify_signature(&keyring_verifier)?;
+        }
 
         Ok(())
     }
@@ -701,7 +714,7 @@ fn test_verify_digests_standalone() -> Result<(), Box<dyn std::error::Error>> {
 /// Test the signatures() API returns correct info for signed and unsigned packages
 #[test]
 fn test_signatures() -> Result<(), Box<dyn std::error::Error>> {
-    use rpm::signature::pgp::{SignatureAlgorithm, SignatureHashAlgorithm, SignatureVersion};
+    use rpm::signature::{SignatureAlgorithm, SignatureHashAlgorithm, SignatureVersion};
 
     // Unsigned packages should return an empty Vec
     assert!(
@@ -754,13 +767,19 @@ fn test_signatures() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(sigs.len(), 1);
     assert_eq!(sigs[0].algorithm(), Some(SignatureAlgorithm::Ed25519));
 
-    // v6 ML-DSA
+    // Sequoia 2.3 can parse the packet but does not classify the draft-PQC algorithm.
     let pkg = rpm::Package::open(common::pkgs::v6::RPM_BASIC_MLDSA_SIGNED)?;
     let sigs = pkg.signatures()?;
     assert_eq!(sigs.len(), 1);
+    #[cfg(feature = "signature-pgp")]
     assert_eq!(
         sigs[0].algorithm(),
         Some(SignatureAlgorithm::MlDsa65Ed25519)
+    );
+    #[cfg(feature = "signature-sequoia")]
+    assert_eq!(
+        sigs[0].algorithm(),
+        Some(SignatureAlgorithm::Unsupported(30))
     );
 
     // v6 multi-signed
@@ -1015,6 +1034,7 @@ fn test_clear_package_signatures() -> Result<(), Box<dyn std::error::Error>> {
         &fs::read(common::keys::v6::ED25519_PRIVATE)?,
         &fs::read(common::keys::v6::ED25519_PUBLIC)?,
     )?;
+    #[cfg(feature = "signature-pgp")]
     sign_clear_and_verify(
         &fs::read(common::keys::v6::MLDSA65_ED25519_PRIVATE)?,
         &fs::read(common::keys::v6::MLDSA65_ED25519_PUBLIC)?,
@@ -1441,6 +1461,7 @@ mod signature_roundtrip {
             common::keys::v6::ED25519_PUBLIC,
             "roundtrip_v6_eddsa.rpm",
         )?;
+        #[cfg(feature = "signature-pgp")]
         roundtrip(
             common::keys::v6::MLDSA65_ED25519_PRIVATE,
             common::keys::v6::MLDSA65_ED25519_PUBLIC,
@@ -1894,11 +1915,8 @@ mod in_place_signing {
         let ed_signer = Signer::from_asc_file(common::keys::v4::ED25519_PRIVATE)?;
         let metadata = rpm::PackageMetadata::open(&out)?;
         let header_bytes = metadata.header_bytes()?;
-        let ed_sig = rpm::signature::Signing::sign(
-            &ed_signer,
-            header_bytes.as_slice(),
-            rpm::Timestamp(1_600_000_000),
-        )?;
+        let ed_sig =
+            rpm::signature::Signing::sign(&ed_signer, header_bytes.as_slice(), test_timestamp())?;
 
         // First in-place apply
         rpm::Package::apply_signature_in_place(&out, ed_sig)?;
@@ -1915,7 +1933,7 @@ mod in_place_signing {
         let ecdsa_sig = rpm::signature::Signing::sign(
             &ecdsa_signer,
             header_bytes.as_slice(),
-            rpm::Timestamp(1_600_000_000),
+            test_timestamp(),
         )?;
 
         // Second in-place apply

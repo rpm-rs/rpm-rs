@@ -1,4 +1,5 @@
 use super::traits;
+pub use super::{SignatureAlgorithm, SignatureHashAlgorithm, SignatureInfo, SignatureVersion};
 use crate::errors::Error;
 
 use std::{fmt, io};
@@ -13,6 +14,16 @@ use pgp::{
     },
     types::{KeyDetails, KeyVersion, Password, PublicParams, SigningKey},
 };
+
+type BoxedError = Box<dyn std::error::Error + Send + Sync>;
+
+fn key_load_error(error: impl Into<BoxedError>) -> Error {
+    Error::KeyLoadSecretKeyError(error.into())
+}
+
+fn sign_error(error: impl Into<BoxedError>) -> Error {
+    Error::SignError(error.into())
+}
 
 /// An enum that can hold either a primary key or a subkey for signing.
 #[derive(Clone, Debug)]
@@ -117,11 +128,10 @@ impl traits::Signing for Signer {
         let mut sig_cfg = Self::prepare_signer_configuration(&self.signing_key, t)?;
 
         if let Some(ref uid) = self.user_id {
-            sig_cfg
-                .hashed_subpackets
-                .push(Subpacket::regular(SubpacketData::SignersUserID(
-                    uid.clone().into(),
-                ))?);
+            sig_cfg.hashed_subpackets.push(
+                Subpacket::regular(SubpacketData::SignersUserID(uid.clone().into()))
+                    .map_err(sign_error)?,
+            );
         }
 
         let pw = self.key_passphrase.clone().unwrap_or_default();
@@ -129,13 +139,13 @@ impl traits::Signing for Signer {
 
         let signature_packet = sig_cfg
             .sign(&self.signing_key, &Password::Static(passwd), data)
-            .map_err(Error::SignError)?;
+            .map_err(sign_error)?;
 
         let mut signature_bytes = Vec::with_capacity(1024);
         let mut cursor = io::Cursor::new(&mut signature_bytes);
         signature_packet
             .to_writer_with_header(&mut cursor)
-            .map_err(Error::SignError)?;
+            .map_err(sign_error)?;
 
         Ok(signature_bytes)
     }
@@ -178,8 +188,7 @@ impl Signer {
     /// is used for signing by default. Otherwise, the primary key is used.
     /// Use [`Signer::with_signing_key`] to select a specific key by fingerprint.
     pub fn from_asc(input: &str) -> Result<Self, Error> {
-        let (keys_iter, _) =
-            SignedSecretKey::from_string_many(input).map_err(Error::KeyLoadSecretKeyError)?;
+        let (keys_iter, _) = SignedSecretKey::from_string_many(input).map_err(key_load_error)?;
 
         let signed_keys: Vec<SignedSecretKey> = keys_iter
             .filter_map(|res| res.ok())
@@ -215,9 +224,7 @@ impl Signer {
                 None
             })
             .ok_or_else(|| {
-                Error::KeyLoadSecretKeyError(pgp::errors::Error::NoMatchingPacket {
-                    backtrace: None,
-                })
+                key_load_error(pgp::errors::Error::NoMatchingPacket { backtrace: None })
             })?;
 
         Ok(Self {
@@ -301,20 +308,18 @@ impl Signer {
 
         sig_cfg
             .hashed_subpackets
-            .push(Subpacket::regular(SubpacketData::SignatureCreationTime(t))?);
-        sig_cfg
-            .hashed_subpackets
-            .push(Subpacket::regular(SubpacketData::IssuerFingerprint(
-                signing_key.fingerprint(),
-            ))?);
+            .push(Subpacket::regular(SubpacketData::SignatureCreationTime(t)).map_err(sign_error)?);
+        sig_cfg.hashed_subpackets.push(
+            Subpacket::regular(SubpacketData::IssuerFingerprint(signing_key.fingerprint()))
+                .map_err(sign_error)?,
+        );
 
         // v4 signatures include the legacy key ID; v6 signatures do not
         if signing_key.version() != KeyVersion::V6 {
-            sig_cfg
-                .hashed_subpackets
-                .push(Subpacket::regular(SubpacketData::IssuerKeyId(
-                    signing_key.legacy_key_id(),
-                ))?);
+            sig_cfg.hashed_subpackets.push(
+                Subpacket::regular(SubpacketData::IssuerKeyId(signing_key.legacy_key_id()))
+                    .map_err(sign_error)?,
+            );
         }
 
         Ok(sig_cfg)
@@ -391,8 +396,7 @@ impl Verifier {
     /// The input may contain a single certificate or a keyring with multiple
     /// certificates. All certificates with supported algorithms are appended.
     pub fn load_from_asc(&mut self, input: &str) -> Result<(), Error> {
-        let (keys_iter, _) =
-            SignedPublicKey::from_string_many(input).map_err(Error::KeyLoadSecretKeyError)?;
+        let (keys_iter, _) = SignedPublicKey::from_string_many(input).map_err(key_load_error)?;
 
         let mut found_any = false;
         for res in keys_iter {
@@ -407,9 +411,9 @@ impl Verifier {
         }
 
         if !found_any {
-            return Err(Error::KeyLoadSecretKeyError(
-                pgp::errors::Error::NoMatchingPacket { backtrace: None },
-            ));
+            return Err(key_load_error(pgp::errors::Error::NoMatchingPacket {
+                backtrace: None,
+            }));
         }
 
         Ok(())
@@ -536,7 +540,7 @@ impl traits::Verifying for Verifier {
                         Err(source) => {
                             log::trace!("Primary key verification failed");
                             last_err = Some(Error::VerificationError {
-                                source,
+                                source: Box::new(source),
                                 key_ref: format!("{:?}", fingerprint),
                             });
                         }
@@ -560,7 +564,7 @@ impl traits::Verifying for Verifier {
                             Err(source) => {
                                 log::trace!("Subkey verification failed");
                                 last_err = Some(Error::VerificationError {
-                                    source,
+                                    source: Box::new(source),
                                     key_ref: format!("{:?}", sub_key.fingerprint()),
                                 });
                             }
@@ -622,32 +626,16 @@ where
 
         let signature_packet = sig_cfg
             .sign(&self.secret_key, &Password::empty(), data)
-            .map_err(Error::SignError)?;
+            .map_err(sign_error)?;
 
         let mut signature_bytes = Vec::with_capacity(1024);
         let mut cursor = io::Cursor::new(&mut signature_bytes);
         signature_packet
             .to_writer_with_header(&mut cursor)
-            .map_err(Error::SignError)?;
+            .map_err(sign_error)?;
 
         Ok(signature_bytes)
     }
-}
-
-/// The public key algorithm used in an OpenPGP signature.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum SignatureAlgorithm {
-    RSA,
-    DSA,
-    ECDSA,
-    EdDSALegacy,
-    Ed25519,
-    Ed448,
-    MlDsa65Ed25519,
-    MlDsa87Ed448,
-    /// An algorithm not recognized for use signing RPMs.
-    Unsupported(u8),
 }
 
 impl From<PublicKeyAlgorithm> for SignatureAlgorithm {
@@ -666,21 +654,6 @@ impl From<PublicKeyAlgorithm> for SignatureAlgorithm {
     }
 }
 
-/// The hash algorithm used in an OpenPGP signature.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum SignatureHashAlgorithm {
-    SHA1,
-    SHA256,
-    SHA384,
-    SHA512,
-    SHA224,
-    SHA3_256,
-    SHA3_512,
-    /// A hash algorithm not recognized by this library.
-    Unsupported(u8),
-}
-
 impl From<HashAlgorithm> for SignatureHashAlgorithm {
     fn from(alg: HashAlgorithm) -> Self {
         match alg {
@@ -696,93 +669,15 @@ impl From<HashAlgorithm> for SignatureHashAlgorithm {
     }
 }
 
-/// The version of an OpenPGP signature packet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum SignatureVersion {
-    V4,
-    V6,
-    /// A version not recognized by this library.
-    Unsupported(u8),
-}
-
-impl From<u8> for SignatureVersion {
-    fn from(v: u8) -> Self {
-        match v {
-            4 => Self::V4,
-            6 => Self::V6,
-            other => Self::Unsupported(other),
-        }
-    }
-}
-
-/// Parsed information about a single OpenPGP signature embedded in an RPM package.
-///
-/// This provides access to the issuer fingerprint, key ID, algorithm, and creation time
-/// without exposing the underlying PGP library types.
-#[derive(Debug, Clone)]
-pub struct SignatureInfo {
-    fingerprint: Option<String>,
-    key_id: Option<String>,
-    version: SignatureVersion,
-    algorithm: Option<SignatureAlgorithm>,
-    hash_algorithm: Option<SignatureHashAlgorithm>,
-    created: Option<u32>,
-}
-
-impl SignatureInfo {
-    pub(crate) fn from_pgp_signature(sig: &pgp::packet::Signature) -> Self {
-        let fingerprint = sig.issuer_fingerprint().first().map(|fp| format!("{fp:x}"));
-        let key_id = sig.issuer_key_id().first().map(|kid| format!("{kid}"));
-        let version: SignatureVersion = Into::<u8>::into(sig.version()).into();
-        let algorithm = sig.config().map(|c| c.pub_alg.into());
-        let hash_algorithm = sig.hash_alg().map(|h| h.into());
-        let created = sig.created().map(|t| t.as_secs());
-
-        Self {
-            fingerprint,
-            key_id,
-            version,
-            algorithm,
-            hash_algorithm,
-            created,
-        }
-    }
-
-    /// The issuer fingerprint as a lowercase hex string, if present.
-    ///
-    /// This is always available for v4 and v6 OpenPGP signatures.
-    pub fn fingerprint(&self) -> Option<&str> {
-        self.fingerprint.as_deref()
-    }
-
-    /// The issuer key ID as a lowercase hex string, if present.
-    ///
-    /// This is typically available for v4 OpenPGP signatures but not for v6,
-    /// which only use issuer fingerprint subpackets.
-    pub fn key_id(&self) -> Option<&str> {
-        self.key_id.as_deref()
-    }
-
-    /// The OpenPGP signature packet version (e.g. 4 or 6).
-    pub fn version(&self) -> SignatureVersion {
-        self.version
-    }
-
-    /// The public key algorithm used to create the signature, if known.
-    pub fn algorithm(&self) -> Option<SignatureAlgorithm> {
-        self.algorithm
-    }
-
-    /// The hash algorithm used in the signature, if known.
-    pub fn hash_algorithm(&self) -> Option<SignatureHashAlgorithm> {
-        self.hash_algorithm
-    }
-
-    /// The signature creation time as seconds since the Unix epoch, if present.
-    pub fn created(&self) -> Option<u32> {
-        self.created
-    }
+pub(crate) fn signature_info(sig: &pgp::packet::Signature) -> SignatureInfo {
+    SignatureInfo::new(
+        sig.issuer_fingerprint().first().map(|fp| format!("{fp:x}")),
+        sig.issuer_key_id().first().map(|kid| format!("{kid}")),
+        Into::<u8>::into(sig.version()).into(),
+        sig.config().map(|c| c.pub_alg.into()),
+        sig.hash_alg().map(|h| h.into()),
+        sig.created().map(|t| t.as_secs()),
+    )
 }
 
 #[cfg(test)]

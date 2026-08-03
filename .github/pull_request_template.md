@@ -20,4 +20,4 @@ are wanted, state them here or leave comments below.
 - [ ] A changelog entry or entries has been added to CHANGELOG.md
 - [ ] Documentation is thorough
 - [ ] Test coverage is excellent and passes
-- [ ] Works when tests are run `--all-features` enabled
+- [ ] Works with each applicable signature backend enabled separately

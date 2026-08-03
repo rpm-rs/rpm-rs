@@ -57,6 +57,10 @@ sha3 = "0.10"
 sha2 = "0.10"
 sha1 = "0.10"
 pgp = { version = "0.20.0", features = ["draft-pqc"], optional = true }
+# Cargo resolves all optional dependencies for one lockfile even when features
+# are mutually exclusive. Sequoia 2.4's stable KEM API therefore cannot coexist
+# in this manifest with rPGP's draft-PQC pre-release KEM API.
+sequoia-openpgp = { version = "=2.3.0", default-features = false, features = ["crypto-rust", "allow-experimental-crypto", "allow-variable-time-crypto"], optional = true }
 getrandom = { version = "0.4.0", optional = true }
 chrono = { version = "0.4", optional = true }
 log = "0.4"
@@ -97,6 +101,7 @@ xz-compression = ["liblzma"]
 bzip2-compression = ["bzip2"]
 
 signature-pgp = ["signature-meta", "pgp", "chrono", "getrandom"]
+signature-sequoia = ["signature-meta", "sequoia-openpgp"]
 signature-meta = []
 
 # Segregate tests that require podman to be installed

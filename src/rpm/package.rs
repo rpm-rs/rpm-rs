@@ -11,8 +11,6 @@ use num_traits::FromPrimitive;
 
 use crate::{CompressionType, constants::*, errors::*};
 
-#[cfg(feature = "signature-pgp")]
-use crate::signature::pgp::Verifier;
 #[cfg(feature = "signature-meta")]
 use crate::{Timestamp, signature};
 #[cfg(feature = "signature-meta")]
@@ -202,16 +200,16 @@ impl DigestReport {
 }
 
 /// The result of verifying a single signature against the provided keys.
-#[cfg(feature = "signature-pgp")]
+#[cfg(feature = "signature-meta")]
 #[derive(Debug)]
 pub struct SignatureCheckResult {
     /// Parsed metadata about the signature (fingerprint, algorithm, etc.).
-    pub info: signature::pgp::SignatureInfo,
+    pub info: signature::SignatureInfo,
     /// `None` if verified successfully, `Some(error)` if verification failed.
     pub error: Option<Error>,
 }
 
-#[cfg(feature = "signature-pgp")]
+#[cfg(feature = "signature-meta")]
 impl SignatureCheckResult {
     /// Returns `Ok(())` if verified, or `Err` with the verification error.
     pub fn result(&self) -> Result<(), &Error> {
@@ -228,7 +226,7 @@ impl SignatureCheckResult {
 }
 
 /// Results of verifying all digests and signatures in the package.
-#[cfg(feature = "signature-pgp")]
+#[cfg(feature = "signature-meta")]
 #[derive(Debug)]
 pub struct SignatureReport {
     /// Digest verification results.
@@ -237,7 +235,7 @@ pub struct SignatureReport {
     pub signatures: Vec<SignatureCheckResult>,
 }
 
-#[cfg(feature = "signature-pgp")]
+#[cfg(feature = "signature-meta")]
 impl SignatureReport {
     /// Collapse into a `Result`: fails if any digest mismatched or if no signature
     /// was successfully verified.
@@ -460,7 +458,10 @@ impl Package {
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut package = rpm::Package::open("tests/assets/RPMS/v4/rpm-basic-2.3.4-5.el9.noarch.rpm")?;
     /// let raw_secret_key = std::fs::read("./tests/assets/signing_keys/v4/rpm-testkey-v4-rsa4096.secret")?;
-    /// let signer = rpm::signature::pgp::Signer::from_asc_bytes(&raw_secret_key)?;
+    /// # #[cfg(feature = "signature-pgp")]
+    /// # let signer = rpm::signature::pgp::Signer::from_asc_bytes(&raw_secret_key)?;
+    /// # #[cfg(feature = "signature-sequoia")]
+    /// # let signer = rpm::signature::sequoia::Signer::from_asc_bytes(&raw_secret_key)?;
     /// // It's recommended to use timestamp of last commit in your VCS
     /// let source_date = 1_600_000_000;
     /// package.sign_with_timestamp(signer, source_date)?;
@@ -636,8 +637,8 @@ impl Package {
     /// Return parsed information about each OpenPGP header signature in the package.
     ///
     /// Delegates to [`PackageMetadata::signatures`].
-    #[cfg(feature = "signature-pgp")]
-    pub fn signatures(&self) -> Result<Vec<signature::pgp::SignatureInfo>, Error> {
+    #[cfg(feature = "signature-meta")]
+    pub fn signatures(&self) -> Result<Vec<signature::SignatureInfo>, Error> {
         self.metadata.signatures()
     }
 
@@ -774,7 +775,10 @@ impl Package {
     ///
     /// ```no_run
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// use rpm::signature::pgp::Verifier;
+    /// # #[cfg(feature = "signature-pgp")]
+    /// # use rpm::signature::pgp::Verifier;
+    /// # #[cfg(feature = "signature-sequoia")]
+    /// # use rpm::signature::sequoia::Verifier;
     ///
     /// let pkg = rpm::Package::open("my-package.rpm")?;
     /// let verifier = Verifier::from_asc_bytes(b"-----BEGIN PGP PUBLIC KEY BLOCK-----\n...")?;
@@ -797,7 +801,7 @@ impl Package {
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg(feature = "signature-pgp")]
+    #[cfg(feature = "signature-meta")]
     pub fn check_signatures<V>(&self, verifier: V) -> Result<SignatureReport, Error>
     where
         V: signature::Verifying<Signature = Vec<u8>>,
@@ -1681,26 +1685,17 @@ impl PackageMetadata {
         }
     }
 
-    #[cfg(feature = "signature-pgp")]
-    fn parse_signature_packets(&self) -> Result<Vec<pgp::packet::Signature>, Error> {
-        self.raw_signatures()?
-            .iter()
-            .map(|bytes| Verifier::parse_signature(bytes))
-            .collect()
-    }
-
     /// Return parsed information about each OpenPGP header signature in the package.
     ///
     /// Does not return legacy header + payload signatures (v3 signatures).
     ///
     /// Returns an empty `Vec` if the package is unsigned.
-    #[cfg(feature = "signature-pgp")]
-    pub fn signatures(&self) -> Result<Vec<signature::pgp::SignatureInfo>, Error> {
-        Ok(self
-            .parse_signature_packets()?
+    #[cfg(feature = "signature-meta")]
+    pub fn signatures(&self) -> Result<Vec<signature::SignatureInfo>, Error> {
+        self.raw_signatures()?
             .iter()
-            .map(signature::pgp::SignatureInfo::from_pgp_signature)
-            .collect())
+            .map(|bytes| signature::parse_signature_info(bytes))
+            .collect()
     }
 
     /// Check header digests and return a detailed report.
@@ -1781,7 +1776,7 @@ impl PackageMetadata {
     ///
     /// Payload digest fields are set to [`DigestStatus::NotChecked`].
     /// To check everything, use [`Package::check_signatures`].
-    #[cfg(feature = "signature-pgp")]
+    #[cfg(feature = "signature-meta")]
     pub fn check_signatures<V>(&self, verifier: V) -> Result<SignatureReport, Error>
     where
         V: signature::Verifying<Signature = Vec<u8>>,
@@ -1793,8 +1788,7 @@ impl PackageMetadata {
 
         let mut signatures = Vec::new();
         for sig_bytes in &self.raw_signatures()? {
-            let parsed = Verifier::parse_signature(sig_bytes)?;
-            let info = signature::pgp::SignatureInfo::from_pgp_signature(&parsed);
+            let info = signature::parse_signature_info(sig_bytes)?;
             let error = verifier.verify(header_bytes.as_slice(), sig_bytes).err();
             signatures.push(SignatureCheckResult { info, error });
         }
