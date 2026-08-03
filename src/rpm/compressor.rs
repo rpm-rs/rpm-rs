@@ -236,20 +236,10 @@ mod encoding {
     }
 
     pub(crate) fn decompress_stream<'a>(
-        value: CompressionType,
         mut reader: impl io::BufRead + 'a,
     ) -> Result<Box<dyn io::Read + 'a>, Error> {
-        // Detect the actual compression from magic bytes, overriding the declared type
-        // when they disagree (e.g. after an in-place decompression).
-        let buf = reader.fill_buf().unwrap_or(&[]);
-        let detected = CompressionType::detect(buf);
-        let is_cpio = is_cpio_magic(buf);
-        let effective = match detected {
-            c if c != CompressionType::None => c,
-            CompressionType::None if is_cpio => CompressionType::None,
-            _ => value,
-        };
-        match effective {
+        let compression = CompressionType::detect(reader.fill_buf().unwrap_or(&[]));
+        match compression {
             CompressionType::None => Ok(Box::new(reader)),
             #[cfg(feature = "gzip-compression")]
             CompressionType::Gzip => Ok(Box::new(flate2::bufread::GzDecoder::new(reader))),
@@ -259,9 +249,8 @@ mod encoding {
             CompressionType::Xz => Ok(Box::new(liblzma::bufread::XzDecoder::new(reader))),
             #[cfg(feature = "bzip2-compression")]
             CompressionType::Bzip2 => Ok(Box::new(bzip2::bufread::BzDecoder::new(reader))),
-            // This is an issue when building with all compression types enabled
             #[allow(unreachable_patterns)]
-            _ => Err(Error::UnsupportedCompressorType(value.to_string())),
+            _ => Err(Error::UnsupportedCompressorType(compression.to_string())),
         }
     }
 }
