@@ -540,6 +540,45 @@ mod test_payload_integration {
         test_basic_package_files(&package)
     }
 
+    #[test]
+    #[cfg(feature = "gzip-compression")]
+    fn test_files_after_decompress_gzip() -> Result<(), Box<dyn std::error::Error>> {
+        let mut package = Package::open(pkgs::v6::compressed::RPM_BASIC_GZIP)?;
+        assert_eq!(package.payload_compression()?, CompressionType::Gzip);
+        package.decompress_payload()?;
+        assert_eq!(package.payload_compression()?, CompressionType::None);
+        test_basic_package_files(&package)
+    }
+
+    #[test]
+    #[cfg(feature = "zstd-compression")]
+    fn test_files_after_decompress_zstd() -> Result<(), Box<dyn std::error::Error>> {
+        let mut package = Package::open(pkgs::v6::compressed::RPM_BASIC_ZSTD)?;
+        assert_eq!(package.payload_compression()?, CompressionType::Zstd);
+        package.decompress_payload()?;
+        assert_eq!(package.payload_compression()?, CompressionType::None);
+        test_basic_package_files(&package)
+    }
+
+    #[test]
+    #[cfg(feature = "xz-compression")]
+    fn test_files_after_decompress_xz() -> Result<(), Box<dyn std::error::Error>> {
+        let mut package = Package::open(pkgs::v6::compressed::RPM_BASIC_XZ)?;
+        assert_eq!(package.payload_compression()?, CompressionType::Xz);
+        package.decompress_payload()?;
+        assert_eq!(package.payload_compression()?, CompressionType::None);
+        test_basic_package_files(&package)
+    }
+
+    #[test]
+    fn test_files_after_decompress_noop() -> Result<(), Box<dyn std::error::Error>> {
+        let mut package = Package::open(pkgs::v6::RPM_BASIC)?;
+        assert_eq!(package.payload_compression()?, CompressionType::None);
+        package.decompress_payload()?;
+        assert_eq!(package.payload_compression()?, CompressionType::None);
+        test_basic_package_files(&package)
+    }
+
     /// Shared test logic for verifying file extraction across all compression types.
     #[track_caller]
     fn test_basic_package_files(package: &Package) -> Result<(), Box<dyn std::error::Error>> {
@@ -1800,6 +1839,37 @@ mod test_payload_integration {
         }
 
         assert_eq!(ghost_seen, ghost_count);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "zstd-compression")]
+    fn test_package_reader_after_decompress_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+        let mut package = Package::open(pkgs::v6::compressed::RPM_BASIC_ZSTD)?;
+        let expected: Vec<_> = package
+            .files()?
+            .map(|r| r.map(|f| (f.metadata.path().to_owned(), f.content)))
+            .collect::<Result<_, _>>()?;
+
+        package.decompress_payload()?;
+
+        let mut buf = Vec::new();
+        package.write(&mut buf)?;
+
+        let mut reader = PackageReader::parse(std::io::BufReader::new(std::io::Cursor::new(buf)))?;
+        let mut actual = Vec::new();
+        while let Some(mut file) = reader.next_file()? {
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)?;
+            actual.push((file.metadata.path().to_owned(), content));
+            file.finish()?;
+        }
+
+        assert_eq!(actual.len(), expected.len());
+        for (i, (path, content)) in actual.iter().enumerate() {
+            assert_eq!(*path, expected[i].0);
+            assert_eq!(*content, expected[i].1);
+        }
         Ok(())
     }
 }

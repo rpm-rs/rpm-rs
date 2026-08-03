@@ -22,6 +22,30 @@ impl std::fmt::Display for CompressionType {
     }
 }
 
+impl CompressionType {
+    /// Detect the compression type from magic bytes at the start of a buffer.
+    ///
+    /// Returns `None` (the variant, not `Option::None`) when the data starts
+    /// with a CPIO magic (`070701`, `070702`, `07070X`) or no known
+    /// compression magic is found.
+    pub fn detect(data: &[u8]) -> Self {
+        if is_cpio_magic(data) {
+            CompressionType::None
+        } else if data.starts_with(&[0x1f, 0x8b]) {
+            CompressionType::Gzip
+        } else if data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+            CompressionType::Zstd
+        } else if data.starts_with(&[0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]) {
+            CompressionType::Xz
+        } else if data.starts_with(&[0x42, 0x5a]) {
+            // b"BZ"
+            CompressionType::Bzip2
+        } else {
+            CompressionType::None
+        }
+    }
+}
+
 impl std::str::FromStr for CompressionType {
     type Err = Error;
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
@@ -33,6 +57,10 @@ impl std::str::FromStr for CompressionType {
             _ => Err(Error::UnknownCompressorType(raw.to_string())),
         }
     }
+}
+
+fn is_cpio_magic(data: &[u8]) -> bool {
+    data.starts_with(b"070701") || data.starts_with(b"070702") || data.starts_with(b"07070X")
 }
 
 #[cfg(feature = "payload")]
@@ -209,9 +237,19 @@ mod encoding {
 
     pub(crate) fn decompress_stream<'a>(
         value: CompressionType,
-        reader: impl io::BufRead + 'a,
+        mut reader: impl io::BufRead + 'a,
     ) -> Result<Box<dyn io::Read + 'a>, Error> {
-        match value {
+        // Detect the actual compression from magic bytes, overriding the declared type
+        // when they disagree (e.g. after an in-place decompression).
+        let buf = reader.fill_buf().unwrap_or(&[]);
+        let detected = CompressionType::detect(buf);
+        let is_cpio = is_cpio_magic(buf);
+        let effective = match detected {
+            c if c != CompressionType::None => c,
+            CompressionType::None if is_cpio => CompressionType::None,
+            _ => value,
+        };
+        match effective {
             CompressionType::None => Ok(Box::new(reader)),
             #[cfg(feature = "gzip-compression")]
             CompressionType::Gzip => Ok(Box::new(flate2::bufread::GzDecoder::new(reader))),

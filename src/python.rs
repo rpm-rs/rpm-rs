@@ -754,7 +754,15 @@ impl PyPackageMetadata {
         self.0.get_installed_size().map_err(to_pyerr)
     }
 
-    /// Name of the compression algorithm used for the payload (e.g. "Zstd", "Gzip").
+    /// Name of the compression algorithm declared in the ``PAYLOADCOMPRESSOR``
+    /// header tag (e.g. ``"Zstd"``, ``"Gzip"``).
+    ///
+    /// .. note::
+    ///
+    ///    This reflects the *original* compression recorded at build time.
+    ///    After :meth:`Package.decompress_payload` the tag is intentionally
+    ///    left unchanged, so it may no longer match the actual payload bytes.
+    ///    Use :attr:`Package.payload_compression` for the effective compression.
     #[getter]
     fn payload_compressor(&self) -> PyResult<String> {
         self.0
