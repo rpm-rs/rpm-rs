@@ -60,10 +60,7 @@ impl Package {
     /// ```
     pub fn files(&self) -> Result<FileIterator<'_>, Error> {
         let file_entries = self.metadata.get_file_entries()?;
-        let archive = decompress_stream(
-            self.metadata.get_payload_compressor()?,
-            io::Cursor::new(&self.payload),
-        )?;
+        let archive = decompress_stream(io::Cursor::new(&self.payload))?;
 
         Ok(FileIterator {
             file_entries,
@@ -111,10 +108,7 @@ impl Package {
             fs::create_dir_all(&dir_path)?;
         }
 
-        let mut archive = decompress_stream(
-            self.metadata.get_payload_compressor()?,
-            io::Cursor::new(&self.payload),
-        )?;
+        let mut archive = decompress_stream(io::Cursor::new(&self.payload))?;
         let file_entries = self.metadata.get_file_entries()?;
 
         for file_entry in file_entries.iter() {
@@ -305,13 +299,12 @@ impl PackageReader {
     /// on demand as you call [`next_file`](Self::next_file).
     pub fn parse(mut input: impl io::BufRead + 'static) -> Result<Self, Error> {
         let metadata = PackageMetadata::parse(&mut input)?;
-        let compression = metadata.get_payload_compressor()?;
         let file_entries = metadata
             .get_file_entries()?
             .into_iter()
             .map(|e| e.into_owned())
             .collect();
-        let archive = decompress_stream(compression, input)?;
+        let archive = decompress_stream(input)?;
         Ok(PackageReader {
             metadata,
             file_entries,
@@ -537,6 +530,45 @@ mod test_payload_integration {
     #[test]
     fn test_files_v4_uncompressed() -> Result<(), Box<dyn std::error::Error>> {
         let package = Package::open(pkgs::v4::RPM_BASIC)?;
+        test_basic_package_files(&package)
+    }
+
+    #[test]
+    #[cfg(feature = "gzip-compression")]
+    fn test_files_after_decompress_gzip() -> Result<(), Box<dyn std::error::Error>> {
+        let mut package = Package::open(pkgs::v6::compressed::RPM_BASIC_GZIP)?;
+        assert_eq!(package.payload_compression()?, CompressionType::Gzip);
+        package.decompress_payload()?;
+        assert_eq!(package.payload_compression()?, CompressionType::None);
+        test_basic_package_files(&package)
+    }
+
+    #[test]
+    #[cfg(feature = "zstd-compression")]
+    fn test_files_after_decompress_zstd() -> Result<(), Box<dyn std::error::Error>> {
+        let mut package = Package::open(pkgs::v6::compressed::RPM_BASIC_ZSTD)?;
+        assert_eq!(package.payload_compression()?, CompressionType::Zstd);
+        package.decompress_payload()?;
+        assert_eq!(package.payload_compression()?, CompressionType::None);
+        test_basic_package_files(&package)
+    }
+
+    #[test]
+    #[cfg(feature = "xz-compression")]
+    fn test_files_after_decompress_xz() -> Result<(), Box<dyn std::error::Error>> {
+        let mut package = Package::open(pkgs::v6::compressed::RPM_BASIC_XZ)?;
+        assert_eq!(package.payload_compression()?, CompressionType::Xz);
+        package.decompress_payload()?;
+        assert_eq!(package.payload_compression()?, CompressionType::None);
+        test_basic_package_files(&package)
+    }
+
+    #[test]
+    fn test_files_after_decompress_noop() -> Result<(), Box<dyn std::error::Error>> {
+        let mut package = Package::open(pkgs::v6::RPM_BASIC)?;
+        assert_eq!(package.payload_compression()?, CompressionType::None);
+        package.decompress_payload()?;
+        assert_eq!(package.payload_compression()?, CompressionType::None);
         test_basic_package_files(&package)
     }
 
@@ -1800,6 +1832,37 @@ mod test_payload_integration {
         }
 
         assert_eq!(ghost_seen, ghost_count);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "zstd-compression")]
+    fn test_package_reader_after_decompress_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+        let mut package = Package::open(pkgs::v6::compressed::RPM_BASIC_ZSTD)?;
+        let expected: Vec<_> = package
+            .files()?
+            .map(|r| r.map(|f| (f.metadata.path().to_owned(), f.content)))
+            .collect::<Result<_, _>>()?;
+
+        package.decompress_payload()?;
+
+        let mut buf = Vec::new();
+        package.write(&mut buf)?;
+
+        let mut reader = PackageReader::parse(std::io::BufReader::new(std::io::Cursor::new(buf)))?;
+        let mut actual = Vec::new();
+        while let Some(mut file) = reader.next_file()? {
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)?;
+            actual.push((file.metadata.path().to_owned(), content));
+            file.finish()?;
+        }
+
+        assert_eq!(actual.len(), expected.len());
+        for (i, (path, content)) in actual.iter().enumerate() {
+            assert_eq!(*path, expected[i].0);
+            assert_eq!(*content, expected[i].1);
+        }
         Ok(())
     }
 }

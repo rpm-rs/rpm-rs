@@ -22,6 +22,30 @@ impl std::fmt::Display for CompressionType {
     }
 }
 
+impl CompressionType {
+    /// Detect the compression type from magic bytes at the start of a buffer.
+    ///
+    /// Returns `None` (the variant, not `Option::None`) when the data starts
+    /// with a CPIO magic (`070701`, `070702`, `07070X`) or no known
+    /// compression magic is found.
+    pub fn detect(data: &[u8]) -> Self {
+        if is_cpio_magic(data) {
+            CompressionType::None
+        } else if data.starts_with(&[0x1f, 0x8b]) {
+            CompressionType::Gzip
+        } else if data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+            CompressionType::Zstd
+        } else if data.starts_with(&[0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]) {
+            CompressionType::Xz
+        } else if data.starts_with(&[0x42, 0x5a]) {
+            // b"BZ"
+            CompressionType::Bzip2
+        } else {
+            CompressionType::None
+        }
+    }
+}
+
 impl std::str::FromStr for CompressionType {
     type Err = Error;
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
@@ -33,6 +57,10 @@ impl std::str::FromStr for CompressionType {
             _ => Err(Error::UnknownCompressorType(raw.to_string())),
         }
     }
+}
+
+fn is_cpio_magic(data: &[u8]) -> bool {
+    data.starts_with(b"070701") || data.starts_with(b"070702") || data.starts_with(b"07070X")
 }
 
 #[cfg(feature = "payload")]
@@ -208,10 +236,10 @@ mod encoding {
     }
 
     pub(crate) fn decompress_stream<'a>(
-        value: CompressionType,
-        reader: impl io::BufRead + 'a,
+        mut reader: impl io::BufRead + 'a,
     ) -> Result<Box<dyn io::Read + 'a>, Error> {
-        match value {
+        let compression = CompressionType::detect(reader.fill_buf().unwrap_or(&[]));
+        match compression {
             CompressionType::None => Ok(Box::new(reader)),
             #[cfg(feature = "gzip-compression")]
             CompressionType::Gzip => Ok(Box::new(flate2::bufread::GzDecoder::new(reader))),
@@ -221,9 +249,8 @@ mod encoding {
             CompressionType::Xz => Ok(Box::new(liblzma::bufread::XzDecoder::new(reader))),
             #[cfg(feature = "bzip2-compression")]
             CompressionType::Bzip2 => Ok(Box::new(bzip2::bufread::BzDecoder::new(reader))),
-            // This is an issue when building with all compression types enabled
             #[allow(unreachable_patterns)]
-            _ => Err(Error::UnsupportedCompressorType(value.to_string())),
+            _ => Err(Error::UnsupportedCompressorType(compression.to_string())),
         }
     }
 }

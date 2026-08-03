@@ -363,6 +363,14 @@ impl Package {
         self.metadata.header_bytes()
     }
 
+    /// Return the effective payload compression type by inspecting the payload magic bytes.
+    ///
+    /// This detects the actual compression so that methods like [`files`](Self::files)
+    /// work correctly even after [`decompress_payload`](Self::decompress_payload) has been called.
+    pub fn payload_compression(&self) -> Result<CompressionType, Error> {
+        Ok(CompressionType::detect(&self.payload))
+    }
+
     /// Decompress the payload in-place, replacing the compressed bytes with
     /// the raw (uncompressed) archive.
     ///
@@ -379,12 +387,11 @@ impl Package {
     /// This is a no-op if the payload compressor is already [`CompressionType::None`].
     #[cfg(feature = "payload")]
     pub fn decompress_payload(&mut self) -> Result<(), Error> {
-        let compressor = self.metadata.get_payload_compressor()?;
-        if compressor == CompressionType::None {
+        if self.payload_compression()? == CompressionType::None {
             return Ok(());
         }
         let mut decompressed = Vec::new();
-        crate::decompress_stream(compressor, io::Cursor::new(self.payload.as_slice()))?
+        crate::decompress_stream(io::Cursor::new(self.payload.as_slice()))?
             .read_to_end(&mut decompressed)?;
         self.payload = decompressed;
 
@@ -1357,6 +1364,12 @@ impl PackageMetadata {
             })
     }
 
+    /// Return the payload compressor declared in the `PAYLOADCOMPRESSOR` header tag.
+    ///
+    /// **Caveat:** This reflects the *original* compression recorded at build time.
+    /// After [`Package::decompress_payload`] the tag is intentionally left unchanged,
+    /// so it may no longer match the actual payload bytes. Use [`Package::payload_compression`]
+    /// when you need the effective compression of the in-memory payload.
     #[inline]
     pub fn get_payload_compressor(&self) -> Result<CompressionType, Error> {
         self.header
