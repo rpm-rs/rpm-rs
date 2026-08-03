@@ -60,10 +60,7 @@ impl Package {
     /// ```
     pub fn files(&self) -> Result<FileIterator<'_>, Error> {
         let file_entries = self.metadata.get_file_entries()?;
-        let archive = decompress_stream(
-            self.metadata.get_payload_compressor()?,
-            io::Cursor::new(&self.payload),
-        )?;
+        let archive = decompress_stream(io::Cursor::new(&self.payload))?;
 
         Ok(FileIterator {
             file_entries,
@@ -111,10 +108,7 @@ impl Package {
             fs::create_dir_all(&dir_path)?;
         }
 
-        let mut archive = decompress_stream(
-            self.metadata.get_payload_compressor()?,
-            io::Cursor::new(&self.payload),
-        )?;
+        let mut archive = decompress_stream(io::Cursor::new(&self.payload))?;
         let file_entries = self.metadata.get_file_entries()?;
 
         for file_entry in file_entries.iter() {
@@ -305,13 +299,12 @@ impl PackageReader {
     /// on demand as you call [`next_file`](Self::next_file).
     pub fn parse(mut input: impl io::BufRead + 'static) -> Result<Self, Error> {
         let metadata = PackageMetadata::parse(&mut input)?;
-        let compression = metadata.get_payload_compressor()?;
         let file_entries = metadata
             .get_file_entries()?
             .into_iter()
             .map(|e| e.into_owned())
             .collect();
-        let archive = decompress_stream(compression, input)?;
+        let archive = decompress_stream(input)?;
         Ok(PackageReader {
             metadata,
             file_entries,

@@ -389,16 +389,12 @@ impl Package {
     /// This is a no-op if the payload compressor is already [`CompressionType::None`].
     #[cfg(feature = "payload")]
     pub fn decompress_payload(&mut self) -> Result<(), Error> {
-        let declared_compression = self.metadata.get_payload_compressor()?;
-        if declared_compression == CompressionType::None {
+        if self.payload_compression()? == CompressionType::None {
             return Ok(());
         }
         let mut decompressed = Vec::new();
-        crate::decompress_stream(
-            declared_compression,
-            io::Cursor::new(self.payload.as_slice()),
-        )?
-        .read_to_end(&mut decompressed)?;
+        crate::decompress_stream(io::Cursor::new(self.payload.as_slice()))?
+            .read_to_end(&mut decompressed)?;
         self.payload = decompressed;
 
         let header_bytes = self.header_bytes()?;
