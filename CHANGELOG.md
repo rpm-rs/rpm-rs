@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `CompressionType::detect()` identifies compression from magic bytes (gzip, zstd, xz, bzip2, CPIO).
+- `Package::payload_compression()` returns the effective compression by inspecting the payload bytes rather than relying on the `PAYLOADCOMPRESSOR` header tag.
+
+### Fixed
+
+- `Package::files()` and `Package::extract()` now work correctly after `Package::decompress_payload()` has been called. Previously they read the `PAYLOADCOMPRESSOR` header tag, which still declared the original compression, and attempted to decompress already-decompressed data.
+
 ## 0.27.0
 
 ### Added
