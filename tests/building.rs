@@ -409,6 +409,39 @@ fn test_build_with_new_file_api() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[test]
+fn root_child_directories_use_canonical_header_and_payload_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pkg = PackageBuilder::new(
+        "root-child-directories",
+        "1.0.0",
+        "MIT",
+        "x86_64",
+        "root child directory paths",
+    )
+    .with_dir_entry(FileOptions::dir("/usr").permissions(0o755))?
+    .with_dir_entry(FileOptions::dir("./opt").permissions(0o750))?
+    .build()?;
+
+    let entries = pkg.metadata.get_file_entries()?;
+    assert_eq!(entries.len(), 2);
+    for (path, basename, permissions) in [("/opt", "opt", 0o750), ("/usr", "usr", 0o755)] {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.path() == Path::new(path))
+            .unwrap_or_else(|| panic!("missing {path}"));
+        assert_eq!(entry.dirname(), "/");
+        assert_eq!(entry.basename(), basename);
+        assert_eq!(entry.permissions(), permissions);
+    }
+
+    let payload = pkg.files()?.collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(payload.len(), 2);
+    assert_eq!(payload[0].metadata.path(), Path::new("/opt"));
+    assert_eq!(payload[1].metadata.path(), Path::new("/usr"));
+    Ok(())
+}
+
 /// Verify that `with_dir` recursively adds directory entries and files.
 #[test]
 fn test_with_dir_basic() -> Result<(), Box<dyn std::error::Error>> {

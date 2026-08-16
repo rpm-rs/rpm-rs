@@ -921,16 +921,25 @@ impl PackageBuilder {
             desc: "no parent directory found",
         })?;
 
+        let root_child = matches!(parent.to_str(), Some("/" | "."));
         let (cpio_path, dir) = if normalized.starts_with('.') {
             (
                 normalized.to_string(),
                 // strip_prefix() should never fail because we've checked the special cases already
-                format!("/{}/", parent.strip_prefix(".").unwrap().to_string_lossy()),
+                if root_child {
+                    "/".to_string()
+                } else {
+                    format!("/{}/", parent.strip_prefix(".").unwrap().to_string_lossy())
+                },
             )
         } else {
             (
                 format!(".{}", normalized),
-                format!("{}/", parent.to_string_lossy()),
+                if root_child {
+                    "/".to_string()
+                } else {
+                    format!("{}/", parent.to_string_lossy())
+                },
             )
         };
 

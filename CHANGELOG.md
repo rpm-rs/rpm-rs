@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- Explicit root-child entries such as `/usr` now use `/` as their RPM header dirname instead of `//`.
+
 ### Added
 
 - The optional `signature-sequoia` feature provides OpenPGP signing and verification through Sequoia 2.3's pure-Rust crypto backend. Signature backends are mutually exclusive: select Sequoia with `--no-default-features --features signature-sequoia`. The default remains `signature-pgp`, including its draft-PQC support.
