@@ -1,5 +1,7 @@
 #![allow(clippy::too_many_arguments)]
 
+mod hardlinks;
+
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::convert::TryInto;
 use std::io::Read;
@@ -894,6 +896,22 @@ impl PackageBuilder {
             options.mode.set_permissions(perms);
         }
 
+        if options.hardlink_identity.as_deref() == Some("") {
+            return Err(Error::InvalidFileOptions {
+                method: "FileOptionsBuilder::hardlink",
+                reason: "hardlink identity must not be empty",
+            });
+        }
+        if options.hardlink_identity.is_some()
+            && (options.mode.file_type() != FileType::Regular
+                || options.flag.contains(FileFlags::GHOST))
+        {
+            return Err(Error::InvalidFileOptions {
+                method: "FileOptionsBuilder::hardlink",
+                reason: "hardlink identity is only valid for non-ghost regular files",
+            });
+        }
+
         let dest = options.destination;
         if !dest.starts_with("./") && !dest.starts_with('/') {
             return Err(Error::InvalidDestinationPath {
@@ -987,6 +1005,7 @@ impl PackageBuilder {
             dir: dir.clone(),
             caps: options.caps,
             verify_flags: options.verify_flags,
+            hardlink_identity: options.hardlink_identity,
             bulk_added: bulk,
         };
 
@@ -1509,6 +1528,7 @@ impl PackageBuilder {
     /// @todo split this into multiple `fn`s, one per `IndexTag`-group.
     fn prepare_data(mut self) -> Result<(Lead, Header<IndexTag>, Vec<u8>), Error> {
         self.pre_build_validation()?;
+        let hardlinks = hardlinks::Plan::from_files(&self.files)?;
 
         // signature depends on header and payload. So we build these two first.
         // then the signature. Then we stitch all together.
@@ -1545,13 +1565,10 @@ impl PackageBuilder {
         let mut base_names = Vec::with_capacity(files_len);
         let mut users_to_create = HashSet::new();
         let mut groups_to_create = HashSet::new();
+        let mut resolved_mtimes = Vec::with_capacity(files_len);
 
-        let mut combined_file_sizes: u64 = 0;
         let mut uses_file_capabilities = false;
-
-        for entry in self.files.values() {
-            combined_file_sizes += entry.source.size()?;
-        }
+        let combined_file_sizes = hardlinks.installed_size(&self.files)?;
 
         let uses_large_files =
             combined_file_sizes > u32::MAX.into() || self.config.format != RpmFormat::V4;
@@ -1559,7 +1576,7 @@ impl PackageBuilder {
         // Entries are sorted by path (BTreeMap iteration order) and duplicates are rejected
         // in add_data(). Paths are also normalized there (collapsing slashes, stripping trailing
         // slashes) to ensure deduplication works correctly.
-        for (file_index, (cpio_path, entry)) in self.files.iter_mut().enumerate() {
+        for (cpio_path, entry) in self.files.iter_mut() {
             if entry.caps.is_some() {
                 uses_file_capabilities = true;
             }
@@ -1586,11 +1603,15 @@ impl PackageBuilder {
                 _ => entry.modified_at,
             };
             file_mtimes.push(mtime.into());
+            resolved_mtimes.push(mtime);
             file_linktos.push(entry.link.to_owned());
             file_flags.push(entry.flags.bits());
             file_usernames.push(entry.user.to_owned());
             file_groupnames.push(entry.group.to_owned());
-            file_inodes.push(ino_index);
+            let inode = hardlinks
+                .member(cpio_path)
+                .map_or(ino_index, |member| member.inode);
+            file_inodes.push(inode);
             file_langs.push("".to_string());
             // safe because indexes cannot change after this as the RpmBuilder is consumed
             // the dir is guaranteed to be there - or else there is a logic error
@@ -1621,33 +1642,51 @@ impl PackageBuilder {
                 continue;
             }
 
-            let mut writer = if !uses_large_files {
-                payload::Builder::new(cpio_path)
-                    .mode(entry.mode.into())
-                    .ino(ino_index)
-                    .nlink(1)
-                    .mtime(mtime.into())
-                    .uid(self.uid.unwrap_or(0))
-                    .gid(self.gid.unwrap_or(0))
-                    .write_cpio(&mut archive, entry.source.size()? as u32)
-            } else {
-                payload::write_stripped_cpio(&mut archive, file_index as u32, entry.source.size()?)
-            };
-            // Only regular files have digests; dirs and symlinks get empty strings
+            // Only regular files have digests; dirs and symlinks get empty strings.
+            // Content is written in a second phase so hardlink sets can follow RPM's
+            // archive ordering and carry bytes only on their completing member.
             if entry.mode.file_type() == FileType::Regular {
-                let mut hash_writer = ChecksummingWriter::new(&mut writer, &[HashKind::Sha256]);
+                let mut sink = io::sink();
+                let mut hash_writer = ChecksummingWriter::new(&mut sink, &[HashKind::Sha256]);
                 io::copy(&mut entry.source.try_into_bufread()?, &mut hash_writer)?;
                 let hash_value_map = hash_writer.into_digests().0;
-                writer.finish()?;
                 if let Some(hash_value) = hash_value_map.get(&HashKind::Sha256) {
                     file_hashes.push(hash_value.to_string());
                 }
             } else {
-                io::copy(&mut entry.source.try_into_bufread()?, &mut writer)?;
-                writer.finish()?;
                 file_hashes.push(String::new());
             }
             ino_index += 1;
+        }
+
+        let file_keys = self.files.keys().cloned().collect::<Vec<_>>();
+        for cpio_path in hardlinks.payload_order(&self.files) {
+            let file_index = file_keys
+                .binary_search(&cpio_path)
+                .expect("payload path came from sorted package file map");
+            let entry = &self.files[&cpio_path];
+            let member = hardlinks.member(&cpio_path);
+            let payload_size = if member.is_none_or(|member| member.has_content) {
+                entry.source.size()?
+            } else {
+                0
+            };
+            let mut writer = if !uses_large_files {
+                payload::Builder::new(&cpio_path)
+                    .mode(entry.mode.into())
+                    .ino(member.map_or(file_inodes[file_index], |member| member.inode))
+                    .nlink(member.map_or(1, |member| member.link_count))
+                    .mtime(resolved_mtimes[file_index].into())
+                    .uid(self.uid.unwrap_or(0))
+                    .gid(self.gid.unwrap_or(0))
+                    .write_cpio(&mut archive, payload_size as u32)
+            } else {
+                payload::write_stripped_cpio(&mut archive, file_index as u32, payload_size)
+            };
+            if payload_size > 0 {
+                io::copy(&mut entry.source.try_into_bufread()?, &mut writer)?;
+            }
+            writer.finish()?;
         }
         payload::trailer(&mut archive)?;
 

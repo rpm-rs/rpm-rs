@@ -167,6 +167,8 @@ mod build_types {
         pub caps: Option<FileCaps>,
         pub verify_flags: FileVerifyFlags,
         pub source: ContentSource,
+        /// Explicit package-local identity shared by members of one hardlink set.
+        pub(crate) hardlink_identity: Option<String>,
         /// Whether this entry was added by a bulk operation (e.g. `with_dir`).
         /// Bulk-added entries can be replaced by explicit methods like `with_file`.
         pub(crate) bulk_added: bool,
@@ -185,6 +187,7 @@ mod build_types {
         pub(crate) use_default_permissions: bool,
         pub(crate) caps: Option<FileCaps>,
         pub(crate) verify_flags: FileVerifyFlags,
+        pub(crate) hardlink_identity: Option<String>,
     }
 
     impl FileOptions {
@@ -205,6 +208,7 @@ mod build_types {
                     use_default_permissions: true,
                     caps: None,
                     verify_flags: FileVerifyFlags::ALL_FLAGS,
+                    hardlink_identity: None,
                 },
             }
         }
@@ -227,6 +231,7 @@ mod build_types {
                     use_default_permissions: true,
                     caps: None,
                     verify_flags: FileVerifyFlags::ALL_FLAGS,
+                    hardlink_identity: None,
                 },
             }
         }
@@ -251,6 +256,7 @@ mod build_types {
                     use_default_permissions: false,
                     caps: None,
                     verify_flags: FileVerifyFlags::ALL_FLAGS,
+                    hardlink_identity: None,
                 },
             }
         }
@@ -282,6 +288,7 @@ mod build_types {
                             | FileVerifyFlags::FILESIZE
                             | FileVerifyFlags::LINKTO
                             | FileVerifyFlags::MTIME),
+                    hardlink_identity: None,
                 },
             }
         }
@@ -306,6 +313,7 @@ mod build_types {
                     use_default_permissions: true,
                     caps: None,
                     verify_flags: FileVerifyFlags::ALL_FLAGS,
+                    hardlink_identity: None,
                 },
             }
         }
@@ -317,6 +325,16 @@ mod build_types {
     }
 
     impl FileOptionsBuilder {
+        /// Associate this regular file with an explicitly declared hardlink set.
+        ///
+        /// Every set identity must be used by at least two regular files. Members
+        /// must have identical content and effective metadata. The identity is
+        /// package-local builder authority and is not stored in the RPM itself.
+        pub fn hardlink(mut self, identity: impl Into<String>) -> Self {
+            self.inner.hardlink_identity = Some(identity.into());
+            self
+        }
+
         /// Indicates that the file should be owned by the specified username.
         ///
         /// Specifying a non-root user here will direct RPM to create the user via sysusers.d at

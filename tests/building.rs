@@ -882,3 +882,112 @@ fn test_epoch_handling() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn explicit_hardlink_set_shares_header_identity_and_one_payload()
+-> Result<(), Box<dyn std::error::Error>> {
+    let content = b"shared hardlink content";
+    let package = PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
+        .with_file_contents(
+            content,
+            FileOptions::new("/usr/lib/hardlinks/anchor")
+                .permissions(0o640)
+                .hardlink("payload:shared"),
+        )?
+        .with_file_contents(
+            content,
+            FileOptions::new("/usr/lib/hardlinks/alias")
+                .permissions(0o640)
+                .hardlink("payload:shared"),
+        )?
+        .build()?;
+
+    let inodes = package
+        .metadata
+        .header
+        .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEINODES)?;
+    let devices = package
+        .metadata
+        .header
+        .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEDEVICES)?;
+    let sizes = package
+        .metadata
+        .header
+        .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILESIZES)?;
+    let digests = package
+        .metadata
+        .header
+        .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEDIGESTS)?;
+    assert_eq!(inodes.len(), 2);
+    assert_eq!(inodes[0], inodes[1]);
+    assert_eq!(devices, vec![1, 1]);
+    assert_eq!(sizes, vec![content.len() as u32; 2]);
+    assert_eq!(digests[0], digests[1]);
+
+    let files = package.files()?.collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(files.len(), 2);
+    assert!(files[0].content.is_empty());
+    assert_eq!(files[1].content, content);
+    Ok(())
+}
+
+#[test]
+fn explicit_hardlink_set_rejects_partial_or_incompatible_members() {
+    let partial = PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
+        .with_file_contents(
+            "same",
+            FileOptions::new("/anchor").hardlink("payload:partial"),
+        )
+        .unwrap()
+        .build();
+    assert!(
+        partial
+            .unwrap_err()
+            .to_string()
+            .contains("at least two package files")
+    );
+
+    let content_mismatch =
+        PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
+            .with_file_contents(
+                "first",
+                FileOptions::new("/anchor").hardlink("payload:content"),
+            )
+            .unwrap()
+            .with_file_contents(
+                "second",
+                FileOptions::new("/alias").hardlink("payload:content"),
+            )
+            .unwrap()
+            .build();
+    assert!(
+        content_mismatch
+            .unwrap_err()
+            .to_string()
+            .contains("identical content")
+    );
+
+    let metadata_mismatch =
+        PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
+            .with_file_contents(
+                "same",
+                FileOptions::new("/anchor")
+                    .permissions(0o640)
+                    .hardlink("payload:metadata"),
+            )
+            .unwrap()
+            .with_file_contents(
+                "same",
+                FileOptions::new("/alias")
+                    .permissions(0o600)
+                    .hardlink("payload:metadata"),
+            )
+            .unwrap()
+            .build();
+    assert!(
+        metadata_mismatch
+            .unwrap_err()
+            .to_string()
+            .contains("identical effective metadata")
+    );
+}
