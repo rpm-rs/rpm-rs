@@ -144,3 +144,90 @@ fn content_digest(entry: &PackageFileEntry) -> Result<[u8; 32], Error> {
     }
     Ok(hasher.finalize().into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::ContentSource;
+    use super::*;
+    use crate::{FileFlags, FileMode, FileVerifyFlags, Timestamp};
+
+    fn entry(content: &str, identity: Option<&str>) -> PackageFileEntry {
+        PackageFileEntry {
+            mode: FileMode::regular(0o644),
+            modified_at: Timestamp(7),
+            link: String::new(),
+            flags: FileFlags::empty(),
+            user: "root".to_string(),
+            group: "root".to_string(),
+            base_name: String::new(),
+            dir: "/".to_string(),
+            caps: None,
+            verify_flags: FileVerifyFlags::ALL_FLAGS,
+            source: ContentSource::Raw(content.as_bytes().to_vec()),
+            hardlink_identity: identity.map(str::to_string),
+            bulk_added: false,
+        }
+    }
+
+    #[test]
+    fn plans_shared_identity_and_rpm_payload_order() {
+        let files = BTreeMap::from([
+            ("./alpha-1".to_string(), entry("alpha", Some("alpha"))),
+            ("./alpha-2".to_string(), entry("alpha", Some("alpha"))),
+            ("./beta-1".to_string(), entry("beta", Some("beta"))),
+            ("./beta-2".to_string(), entry("beta", Some("beta"))),
+            ("./standalone".to_string(), entry("alone", None)),
+        ]);
+
+        let plan = Plan::from_files(&files).unwrap();
+        let alpha_1 = plan.member("./alpha-1").unwrap();
+        let alpha_2 = plan.member("./alpha-2").unwrap();
+        let beta_1 = plan.member("./beta-1").unwrap();
+        let beta_2 = plan.member("./beta-2").unwrap();
+
+        assert_eq!(alpha_1.inode, 1);
+        assert_eq!(alpha_2.inode, alpha_1.inode);
+        assert_eq!(alpha_1.link_count, 2);
+        assert!(!alpha_1.has_content);
+        assert!(alpha_2.has_content);
+        assert_eq!(beta_1.inode, 3);
+        assert_eq!(beta_2.inode, beta_1.inode);
+        assert!(plan.member("./standalone").is_none());
+        assert_eq!(
+            plan.payload_order(&files),
+            [
+                "./standalone",
+                "./alpha-1",
+                "./alpha-2",
+                "./beta-1",
+                "./beta-2",
+            ]
+        );
+        assert_eq!(plan.installed_size(&files).unwrap(), 14);
+    }
+
+    #[test]
+    fn rejects_incomplete_or_conflicting_sets() {
+        let incomplete =
+            BTreeMap::from([("./only".to_string(), entry("same", Some("incomplete")))]);
+        assert!(
+            Plan::from_files(&incomplete)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("at least two package files")
+        );
+
+        let conflicting = BTreeMap::from([
+            ("./first".to_string(), entry("first", Some("conflict"))),
+            ("./second".to_string(), entry("second", Some("conflict"))),
+        ]);
+        assert!(
+            Plan::from_files(&conflicting)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("identical content")
+        );
+    }
+}

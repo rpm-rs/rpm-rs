@@ -823,6 +823,95 @@ fn test_build_rpm_rich_deps() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Build a package matching the rpm-hardlinks.spec file.
+#[test]
+fn test_build_rpm_hardlinks() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = std::env::temp_dir().join("rpm-rs-explicit-hardlinks-test");
+    std::fs::create_dir_all(&temp_dir)?;
+
+    let alpha_1 = temp_dir.join("alpha-1");
+    std::fs::write(&alpha_1, "shared-content-alpha\n")?;
+    let alpha_2 = temp_dir.join("alpha-2");
+    let _ = std::fs::remove_file(&alpha_2);
+    std::fs::hard_link(&alpha_1, &alpha_2)?;
+    let alpha_3 = temp_dir.join("alpha-3");
+    let _ = std::fs::remove_file(&alpha_3);
+    std::fs::hard_link(&alpha_1, &alpha_3)?;
+
+    let beta_1 = temp_dir.join("beta-1");
+    std::fs::write(&beta_1, "shared-content-beta\n")?;
+    let beta_2 = temp_dir.join("beta-2");
+    let _ = std::fs::remove_file(&beta_2);
+    std::fs::hard_link(&beta_1, &beta_2)?;
+
+    let standalone = temp_dir.join("standalone");
+    std::fs::write(&standalone, "standalone\n")?;
+
+    let pkg = PackageBuilder::new(
+        "rpm-hardlinks",
+        "1.0",
+        "MIT",
+        "noarch",
+        "Test RPM hard link handling",
+    )
+    .using_config(
+        BuildConfig::v6()
+            .compression(CompressionType::None)
+            .source_date(common::FIXTURE_SOURCE_DATE),
+    )
+    .release("1")
+    .description(
+        "A package for exercising RPM hard link handling in the payload.\n\
+         Contains sets of hard-linked files to test inode deduplication\n\
+         and the RPMTAG_FILEINODES / RPMTAG_FILENLINKS tags.",
+    )
+    .with_file(
+        &alpha_1,
+        FileOptions::new("/opt/rpm-hardlinks/alpha-1")
+            .permissions(0o644)
+            .hardlink("alpha"),
+    )?
+    .with_file(
+        &alpha_2,
+        FileOptions::new("/opt/rpm-hardlinks/alpha-2")
+            .permissions(0o644)
+            .hardlink("alpha"),
+    )?
+    .with_file(
+        &alpha_3,
+        FileOptions::new("/opt/rpm-hardlinks/alpha-3")
+            .permissions(0o644)
+            .hardlink("alpha"),
+    )?
+    .with_file(
+        &beta_1,
+        FileOptions::new("/opt/rpm-hardlinks/beta-1")
+            .permissions(0o644)
+            .hardlink("beta"),
+    )?
+    .with_file(
+        &beta_2,
+        FileOptions::new("/opt/rpm-hardlinks/beta-2")
+            .permissions(0o644)
+            .hardlink("beta"),
+    )?
+    .with_file(
+        &standalone,
+        FileOptions::new("/opt/rpm-hardlinks/standalone").permissions(0o644),
+    )?
+    .build()?;
+
+    std::fs::remove_dir_all(&temp_dir)?;
+
+    let mut buf = Vec::new();
+    pkg.write(&mut buf)?;
+    let parsed = Package::parse(&mut buf.as_slice())?;
+    let fixture = Package::open(common::pkgs::v6::RPM_HARDLINKS)?;
+    assert_packages_match(&parsed, &fixture, "v6")?;
+
+    Ok(())
+}
+
 /// Test that reading and writing RPM files is lossless.
 ///
 /// Parse all test fixture RPM files, write them out, and verify the checksum

@@ -345,6 +345,99 @@ fn test_file_types() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Parse the rpm-hardlinks fixture and verify its hardlink metadata.
+#[test]
+fn test_hardlinks_package() -> Result<(), Box<dyn std::error::Error>> {
+    let package = Package::open(common::pkgs::v6::RPM_HARDLINKS)?;
+    let metadata = &package.metadata;
+
+    assert!(!metadata.is_source_package());
+    assert_eq!(metadata.get_name()?, "rpm-hardlinks");
+    assert!(matches!(metadata.get_epoch(), Err(Error::TagNotFound(_))));
+    assert_eq!(metadata.get_version()?, "1.0");
+    assert_eq!(metadata.get_release()?, "1");
+    assert_eq!(metadata.get_arch()?, "noarch");
+    assert_eq!(
+        metadata.get_description()?,
+        "A package for exercising RPM hard link handling in the payload.\n\
+         Contains sets of hard-linked files to test inode deduplication\n\
+         and the RPMTAG_FILEINODES / RPMTAG_FILENLINKS tags."
+    );
+    assert_eq!(metadata.get_summary()?, "Test RPM hard link handling");
+    assert_eq!(metadata.get_license()?, "MIT");
+    assert_eq!(metadata.get_group()?, "Unspecified");
+    assert_eq!(metadata.get_build_host()?, "localhost");
+    assert_eq!(
+        metadata.get_build_time()?,
+        common::FIXTURE_SOURCE_DATE as u64
+    );
+    assert_eq!(metadata.get_payload_compressor()?, CompressionType::None);
+    assert_eq!(metadata.get_installed_size()?, 52);
+    assert_eq!(metadata.get_cookie()?, COOKIE);
+    assert_eq!(metadata.get_source_rpm()?, "rpm-hardlinks-1.0-1.src.rpm");
+    assert_eq!(
+        metadata.get_file_digest_algorithm()?,
+        DigestAlgorithm::Sha2_256
+    );
+
+    assert!(matches!(metadata.get_vendor(), Err(Error::TagNotFound(_))));
+    assert!(matches!(metadata.get_url(), Err(Error::TagNotFound(_))));
+    assert!(matches!(
+        metadata.get_packager(),
+        Err(Error::TagNotFound(_))
+    ));
+    assert!(matches!(metadata.get_vcs(), Err(Error::TagNotFound(_))));
+
+    assert_eq!(metadata.get_file_entries()?.len(), 6);
+    assert_eq!(metadata.get_file_paths()?.len(), 6);
+    assert!(metadata.get_changelog_entries()?.is_empty());
+    assert_eq!(
+        metadata.get_provides()?,
+        vec![Dependency::eq("rpm-hardlinks", "1.0-1")]
+    );
+    assert_eq!(
+        metadata.get_requires()?,
+        vec![Dependency::rpmlib("LargeFiles", "4.12.0-1")]
+    );
+    assert!(metadata.get_conflicts()?.is_empty());
+    assert!(metadata.get_obsoletes()?.is_empty());
+    assert!(metadata.get_supplements()?.is_empty());
+    assert!(metadata.get_suggests()?.is_empty());
+    assert!(metadata.get_enhances()?.is_empty());
+    assert!(metadata.get_recommends()?.is_empty());
+
+    let inodes = metadata
+        .header
+        .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEINODES)?;
+    assert_eq!(inodes[0], inodes[1]);
+    assert_eq!(inodes[1], inodes[2]);
+    assert_eq!(inodes[3], inodes[4]);
+    assert_ne!(inodes[3], inodes[0]);
+    assert_ne!(inodes[5], inodes[0]);
+    assert_ne!(inodes[5], inodes[3]);
+
+    assert_eq!(
+        metadata
+            .signature
+            .get_entry_data_as_string(IndexSignatureTag::RPMSIGTAG_SHA256)?,
+        "83eb72fe3720ae2b4696da421d5cc34ef0acd66543b71746e9a13954c77fe7a4"
+    );
+    assert_eq!(
+        metadata
+            .signature
+            .get_entry_data_as_string(IndexSignatureTag::RPMSIGTAG_SHA3_256)?,
+        "4422ac5a772b85bad8febeeac2850506805f9e7a0c07ea2e2d56d71d3c2b5557"
+    );
+    assert_eq!(
+        metadata
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_PAYLOADSHA256)?,
+        vec!["46b58e9fa6f9b7db79738203322df03612f439053140a5aefa9f1b3654db9a20"]
+    );
+
+    Ok(())
+}
+
 /// Parse v4 and v6 rpm-basic fixtures and verify metadata fields.
 #[test]
 fn test_basic_package() -> Result<(), Box<dyn std::error::Error>> {
