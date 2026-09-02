@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `FileOptionsBuilder::hardlink()` declares exact package-local hardlink sets. The builder validates member content and metadata, emits shared header inode/device authority, and writes one completing payload member with the RPM hardlink link count.
+- `FileOptionsBuilder::hardlink()` declares package-local hardlink sets.
 - The optional `signature-sequoia` feature provides OpenPGP signing and verification through Sequoia 2.3's pure-Rust crypto backend. Signature backends are mutually exclusive: select Sequoia with `--no-default-features --features signature-sequoia`. The default remains `signature-pgp`, including its draft-PQC support.
 
 ## 0.27.1

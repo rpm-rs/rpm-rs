@@ -388,6 +388,7 @@ fn test_hardlinks_package() -> Result<(), Box<dyn std::error::Error>> {
     ));
     assert!(matches!(metadata.get_vcs(), Err(Error::TagNotFound(_))));
 
+    // 6 files: alpha-1, alpha-2, alpha-3, beta-1, beta-2, standalone
     assert_eq!(metadata.get_file_entries()?.len(), 6);
     assert_eq!(metadata.get_file_paths()?.len(), 6);
     assert!(metadata.get_changelog_entries()?.is_empty());
@@ -406,16 +407,24 @@ fn test_hardlinks_package() -> Result<(), Box<dyn std::error::Error>> {
     assert!(metadata.get_enhances()?.is_empty());
     assert!(metadata.get_recommends()?.is_empty());
 
+    // Verify hardlink metadata via shared inodes.
     let inodes = metadata
         .header
         .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEINODES)?;
+
+    // alpha-1, alpha-2, alpha-3 share an inode.
     assert_eq!(inodes[0], inodes[1]);
     assert_eq!(inodes[1], inodes[2]);
+
+    // beta-1, beta-2 share a different inode.
     assert_eq!(inodes[3], inodes[4]);
     assert_ne!(inodes[3], inodes[0]);
+
+    // standalone has its own inode.
     assert_ne!(inodes[5], inodes[0]);
     assert_ne!(inodes[5], inodes[3]);
 
+    // Signature checksums (v6 package).
     assert_eq!(
         metadata
             .signature
@@ -428,6 +437,7 @@ fn test_hardlinks_package() -> Result<(), Box<dyn std::error::Error>> {
             .get_entry_data_as_string(IndexSignatureTag::RPMSIGTAG_SHA3_256)?,
         "4422ac5a772b85bad8febeeac2850506805f9e7a0c07ea2e2d56d71d3c2b5557"
     );
+    // Payload digest.
     assert_eq!(
         metadata
             .header

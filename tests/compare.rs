@@ -824,11 +824,17 @@ fn test_build_rpm_rich_deps() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Build a package matching the rpm-hardlinks.spec file.
+///
+/// Tests explicit hardlink declaration and payload deduplication:
+/// - Three hardlinked files (alpha-1, alpha-2, alpha-3) sharing content
+/// - Two hardlinked files (beta-1, beta-2) sharing content
+/// - One standalone file
 #[test]
 fn test_build_rpm_hardlinks() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = std::env::temp_dir().join("rpm-rs-explicit-hardlinks-test");
     std::fs::create_dir_all(&temp_dir)?;
 
+    // Create files with hardlinks.
     let alpha_1 = temp_dir.join("alpha-1");
     std::fs::write(&alpha_1, "shared-content-alpha\n")?;
     let alpha_2 = temp_dir.join("alpha-2");
@@ -901,11 +907,15 @@ fn test_build_rpm_hardlinks() -> Result<(), Box<dyn std::error::Error>> {
     )?
     .build()?;
 
+    // Clean up.
     std::fs::remove_dir_all(&temp_dir)?;
 
+    // Write and re-read the package.
     let mut buf = Vec::new();
     pkg.write(&mut buf)?;
     let parsed = Package::parse(&mut buf.as_slice())?;
+
+    // Compare with the rpmbuild fixture package.
     let fixture = Package::open(common::pkgs::v6::RPM_HARDLINKS)?;
     assert_packages_match(&parsed, &fixture, "v6")?;
 

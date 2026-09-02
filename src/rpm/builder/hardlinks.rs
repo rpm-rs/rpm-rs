@@ -8,13 +8,18 @@ use sha2::{Digest, Sha256};
 use super::PackageFileEntry;
 use crate::Error;
 
+/// The RPM header and payload properties assigned to one declared hardlink member.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Member {
+    /// Synthetic inode shared by every member of the set.
     pub(super) inode: u32,
+    /// Number of paths in the complete package-local set.
     pub(super) link_count: u32,
+    /// Whether this member carries the set's bytes in the CPIO payload.
     pub(super) has_content: bool,
 }
 
+/// Validated hardlink properties indexed by normalized package path.
 #[derive(Default)]
 pub(super) struct Plan {
     members: HashMap<String, Member>,
@@ -22,6 +27,8 @@ pub(super) struct Plan {
 
 impl Plan {
     pub(super) fn from_files(files: &BTreeMap<String, PackageFileEntry>) -> Result<Self, Error> {
+        // Group declarations by their caller-owned identity. BTreeMap ordering makes both
+        // group traversal and member order deterministic across builder invocations.
         let mut groups = BTreeMap::<&str, Vec<(&str, &PackageFileEntry)>>::new();
         for (path, entry) in files {
             if let Some(identity) = entry.hardlink_identity.as_deref() {
@@ -32,6 +39,9 @@ impl Plan {
         let mut members = HashMap::new();
         for entries in groups.values() {
             validate_group(entries)?;
+
+            // RPM identifies files by their one-based position in the sorted header arrays.
+            // Every member receives the position of the set's first package path.
             let inode = files
                 .keys()
                 .position(|candidate| candidate == entries[0].0)
@@ -47,6 +57,9 @@ impl Plan {
                     method: "PackageBuilder::build",
                     reason: "hardlink set exceeds RPM's 32-bit link-count authority",
                 })?;
+
+            // In an RPM CPIO payload, earlier hardlink entries have zero size and the final
+            // entry carries the shared bytes. `entries` is already in package-path order.
             for (index, (path, _)) in entries.iter().enumerate() {
                 members.insert(
                     (*path).to_string(),
@@ -66,6 +79,8 @@ impl Plan {
     }
 
     pub(super) fn payload_order(&self, files: &BTreeMap<String, PackageFileEntry>) -> Vec<String> {
+        // Match rpmbuild: ordinary payload entries come first, followed by all hardlink
+        // members. Each partition retains the package's sorted header order.
         files
             .iter()
             .filter(|(_, entry)| !entry.flags.contains(crate::FileFlags::GHOST))
@@ -84,6 +99,8 @@ impl Plan {
         &self,
         files: &BTreeMap<String, PackageFileEntry>,
     ) -> Result<u64, Error> {
+        // Hardlink paths report the shared file size individually in RPMTAG_FILESIZES, but
+        // RPMTAG_SIZE counts their installed bytes only once.
         files.iter().try_fold(0_u64, |total, (path, entry)| {
             let contributes = self.member(path).is_none_or(|member| member.has_content);
             let size = if contributes { entry.source.size()? } else { 0 };
@@ -106,6 +123,8 @@ fn validate_group(entries: &[(&str, &PackageFileEntry)]) -> Result<(), Error> {
     let anchor_size = anchor.source.size()?;
     let anchor_digest = content_digest(anchor)?;
     for (_, member) in &entries[1..] {
+        // One filesystem inode cannot give its paths different ownership, mode, flags,
+        // timestamps, link targets, capabilities, or verification policy.
         if member.mode != anchor.mode
             || member.modified_at != anchor.modified_at
             || member.user != anchor.user
@@ -121,6 +140,8 @@ fn validate_group(entries: &[(&str, &PackageFileEntry)]) -> Result<(), Error> {
                 reason: "hardlink members must have identical effective metadata",
             });
         }
+        // Compare both size and a streaming digest so declarations work for raw buffers and
+        // file-backed content without retaining every member's bytes in memory.
         if member.source.size()? != anchor_size || content_digest(member)? != anchor_digest {
             return Err(Error::InvalidFileOptions {
                 method: "PackageBuilder::build",

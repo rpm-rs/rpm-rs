@@ -883,6 +883,8 @@ fn test_epoch_handling() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Verify an explicit hardlink set receives one shared RPM inode and link count,
+/// with its content carried only by the set's completing payload member.
 #[test]
 fn explicit_hardlink_set_shares_header_identity_and_one_payload()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -931,6 +933,8 @@ fn explicit_hardlink_set_shares_header_identity_and_one_payload()
     Ok(())
 }
 
+/// Reject incomplete hardlink sets and members whose content or effective
+/// metadata differs, since they cannot represent one installed filesystem inode.
 #[test]
 fn explicit_hardlink_set_rejects_partial_or_incompatible_members() {
     let partial = PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
