@@ -374,3 +374,63 @@ class TestBuilderReuse:
             assert False, "Expected ValueError on double build"
         except ValueError as e:
             assert "already been consumed" in str(e)
+
+
+class TestHardlinks:
+    def test_hardlink_basic(self):
+        b = PackageBuilder("test", "1.0", "MIT", "noarch")
+        content = b"shared content"
+        b.with_file_contents(
+            content,
+            FileOptions.new("/usr/lib/test/file1", permissions=0o644, hardlink="set1"),
+        )
+        b.with_file_contents(
+            content,
+            FileOptions.new("/usr/lib/test/file2", permissions=0o644, hardlink="set1"),
+        )
+        pkg = b.build()
+        assert pkg.metadata.name == "test"
+
+    def test_hardlink_metadata_mismatch_raises(self):
+        b = PackageBuilder("test", "1.0", "MIT", "noarch")
+        b.with_file_contents(
+            b"same",
+            FileOptions.new("/file1", permissions=0o644, hardlink="mismatch"),
+        )
+        b.with_file_contents(
+            b"same",
+            FileOptions.new("/file2", permissions=0o600, hardlink="mismatch"),
+        )
+        try:
+            pkg = b.build()
+            assert False, "Expected ValueError for metadata mismatch"
+        except ValueError as e:
+            assert "identical effective metadata" in str(e)
+
+    def test_hardlink_content_mismatch_raises(self):
+        b = PackageBuilder("test", "1.0", "MIT", "noarch")
+        b.with_file_contents(
+            b"first",
+            FileOptions.new("/file1", hardlink="content"),
+        )
+        b.with_file_contents(
+            b"second",
+            FileOptions.new("/file2", hardlink="content"),
+        )
+        try:
+            pkg = b.build()
+            assert False, "Expected ValueError for content mismatch"
+        except ValueError as e:
+            assert "identical content" in str(e)
+
+    def test_hardlink_partial_set_raises(self):
+        b = PackageBuilder("test", "1.0", "MIT", "noarch")
+        b.with_file_contents(
+            b"only one",
+            FileOptions.new("/file1", hardlink="partial"),
+        )
+        try:
+            pkg = b.build()
+            assert False, "Expected ValueError for partial hardlink set"
+        except ValueError as e:
+            assert "at least two package files" in str(e)

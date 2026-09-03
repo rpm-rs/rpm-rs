@@ -2102,6 +2102,7 @@ fn apply_file_options(
     doc: bool,
     license: bool,
     artifact: bool,
+    hardlink: Option<&str>,
 ) -> Result<crate::FileOptionsBuilder, crate::Error> {
     if let Some(u) = user {
         builder = builder.user(u);
@@ -2133,6 +2134,9 @@ fn apply_file_options(
     if artifact {
         builder = builder.artifact();
     }
+    if let Some(h) = hardlink {
+        builder = builder.hardlink(h);
+    }
     Ok(builder)
 }
 
@@ -2140,7 +2144,7 @@ fn apply_file_options(
 impl PyFileOptions {
     /// Create options for a regular file at the given destination path.
     #[staticmethod]
-    #[pyo3(name = "new", signature = (dest, *, user=None, group=None, permissions=None, caps=None, config=false, noreplace=false, missingok=false, doc=false, license=false, artifact=false))]
+    #[pyo3(name = "new", signature = (dest, *, user=None, group=None, permissions=None, caps=None, config=false, noreplace=false, missingok=false, doc=false, license=false, artifact=false, hardlink=None))]
     fn new_file(
         dest: &str,
         user: Option<&str>,
@@ -2153,6 +2157,7 @@ impl PyFileOptions {
         doc: bool,
         license: bool,
         artifact: bool,
+        hardlink: Option<&str>,
     ) -> PyResult<Self> {
         apply_file_options(
             crate::FileOptions::new(dest),
@@ -2166,6 +2171,7 @@ impl PyFileOptions {
             doc,
             license,
             artifact,
+            hardlink,
         )
         .map(|b| PyFileOptions(Some(b)))
         .map_err(to_pyerr)
@@ -2192,6 +2198,7 @@ impl PyFileOptions {
             false,
             false,
             false,
+            None,
         )
         .map(|b| PyFileOptions(Some(b)))
         .map_err(to_pyerr)
@@ -2218,6 +2225,7 @@ impl PyFileOptions {
             false,
             false,
             false,
+            None,
         )
         .map(|b| PyFileOptions(Some(b)))
         .map_err(to_pyerr)
@@ -2244,6 +2252,7 @@ impl PyFileOptions {
             false,
             false,
             false,
+            None,
         )
         .map(|b| PyFileOptions(Some(b)))
         .map_err(to_pyerr)
@@ -2270,6 +2279,7 @@ impl PyFileOptions {
             false,
             false,
             false,
+            None,
         )
         .map(|b| PyFileOptions(Some(b)))
         .map_err(to_pyerr)
@@ -2457,6 +2467,7 @@ impl PyPackageBuilder {
                     doc,
                     license,
                     artifact,
+                    None,
                 )
                 .unwrap()
             })

@@ -933,10 +933,9 @@ fn explicit_hardlink_set_shares_header_identity_and_one_payload()
     Ok(())
 }
 
-/// Reject incomplete hardlink sets and members whose content or effective
-/// metadata differs, since they cannot represent one installed filesystem inode.
+/// Reject incomplete hardlink sets (only one hardlink declared)
 #[test]
-fn explicit_hardlink_set_rejects_partial_or_incompatible_members() {
+fn explicit_hardlink_builder_rejects_partial_set() {
     let partial = PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
         .with_file_contents(
             "same",
@@ -950,7 +949,12 @@ fn explicit_hardlink_set_rejects_partial_or_incompatible_members() {
             .to_string()
             .contains("at least two package files")
     );
+}
 
+/// Reject hardlink sets where the content differs between members,
+/// since they cannot represent one installed filesystem inode.
+#[test]
+fn explicit_hardlink_builder_rejects_content_mismatch() {
     let content_mismatch =
         PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
             .with_file_contents(
@@ -970,7 +974,12 @@ fn explicit_hardlink_set_rejects_partial_or_incompatible_members() {
             .to_string()
             .contains("identical content")
     );
+}
 
+/// Reject hardlink sets where the effective metadata differs etween members,
+/// since they cannot represent one installed filesystem inode.
+#[test]
+fn explicit_hardlink_builder_rejects_metadata_mismatch() {
     let metadata_mismatch =
         PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
             .with_file_contents(
