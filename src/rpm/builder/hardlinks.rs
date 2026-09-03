@@ -26,7 +26,13 @@ pub(super) struct Plan {
 }
 
 impl Plan {
-    pub(super) fn from_files(files: &BTreeMap<String, PackageFileEntry>) -> Result<Self, Error> {
+    /// Build a plan from explicit `.hardlink("identity")` declarations.
+    ///
+    /// Validates that each identity is used by at least two files and that all members
+    /// of each group have identical content and metadata.
+    pub(super) fn from_explicit_declarations(
+        files: &BTreeMap<String, PackageFileEntry>,
+    ) -> Result<Self, Error> {
         // Group declarations by their caller-owned identity. BTreeMap ordering makes both
         // group traversal and member order deterministic across builder invocations.
         let mut groups = BTreeMap::<&str, Vec<(&str, &PackageFileEntry)>>::new();
@@ -72,6 +78,78 @@ impl Plan {
             }
         }
         Ok(Self { members })
+    }
+
+    /// Build a plan from filesystem hardlink identities (dev, ino pairs).
+    ///
+    /// Groups files by their filesystem identity and validates that members have
+    /// identical content and effective metadata. Files with explicit hardlink
+    /// declarations are excluded from automatic detection.
+    #[cfg(unix)]
+    pub(super) fn add_filesystem_identities(
+        &mut self,
+        source_identities: &HashMap<String, (u64, u64)>,
+        files: &BTreeMap<String, PackageFileEntry>,
+    ) -> Result<(), Error> {
+        // Group cpio paths by (dev, ino)
+        let mut identity_groups: BTreeMap<(u64, u64), Vec<&str>> = BTreeMap::new();
+        for (path, identity) in source_identities {
+            let Some(entry) = files.get(path) else {
+                continue;
+            };
+            // Explicit declarations always take precedence over automatic detection.
+            if entry.hardlink_identity.is_some() {
+                continue;
+            }
+            identity_groups.entry(*identity).or_default().push(path);
+        }
+
+        for paths in identity_groups.values_mut() {
+            if paths.len() < 2 {
+                continue; // Not a hardlink group
+            }
+            paths.sort_unstable();
+
+            let entries: Vec<(&str, &PackageFileEntry)> =
+                paths.iter().map(|p| (*p, &files[*p])).collect();
+            validate_group(&entries)?;
+
+            // Assign shared inode based on first file's position in BTreeMap
+            let inode = files
+                .keys()
+                .position(|k| paths.contains(&k.as_str()))
+                .expect("path in source_identities must exist in files")
+                .checked_add(1)
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or(Error::InvalidFileOptions {
+                    method: "PackageBuilder::build",
+                    reason: "hardlink inode exceeds RPM's 32-bit authority",
+                })?;
+
+            let link_count = u32::try_from(paths.len()).map_err(|_| Error::InvalidFileOptions {
+                method: "PackageBuilder::build",
+                reason: "hardlink set exceeds RPM's 32-bit link-count authority",
+            })?;
+
+            // Determine which path is last in BTreeMap iteration order (gets content)
+            let last_path = files
+                .keys()
+                .rev()
+                .find(|k| paths.contains(&k.as_str()))
+                .expect("path in source_identities must exist in files");
+
+            for path in paths {
+                self.members.insert(
+                    (*path).to_string(),
+                    Member {
+                        inode,
+                        link_count,
+                        has_content: *path == last_path.as_str(),
+                    },
+                );
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn member(&self, path: &str) -> Option<Member> {
@@ -200,7 +278,7 @@ mod tests {
             ("./standalone".to_string(), entry("alone", None)),
         ]);
 
-        let plan = Plan::from_files(&files).unwrap();
+        let plan = Plan::from_explicit_declarations(&files).unwrap();
         let alpha_1 = plan.member("./alpha-1").unwrap();
         let alpha_2 = plan.member("./alpha-2").unwrap();
         let beta_1 = plan.member("./beta-1").unwrap();
@@ -232,7 +310,7 @@ mod tests {
         let incomplete =
             BTreeMap::from([("./only".to_string(), entry("same", Some("incomplete")))]);
         assert!(
-            Plan::from_files(&incomplete)
+            Plan::from_explicit_declarations(&incomplete)
                 .err()
                 .unwrap()
                 .to_string()
@@ -244,11 +322,70 @@ mod tests {
             ("./second".to_string(), entry("second", Some("conflict"))),
         ]);
         assert!(
-            Plan::from_files(&conflicting)
+            Plan::from_explicit_declarations(&conflicting)
                 .err()
                 .unwrap()
                 .to_string()
                 .contains("identical content")
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn adds_automatic_groups_to_explicit_plan() {
+        let files = BTreeMap::from([
+            (
+                "./explicit-1".to_string(),
+                entry("content-a", Some("explicit")),
+            ),
+            (
+                "./explicit-2".to_string(),
+                entry("content-a", Some("explicit")),
+            ),
+            ("./automatic-1".to_string(), entry("content-b", None)),
+            ("./automatic-2".to_string(), entry("content-b", None)),
+        ]);
+
+        let mut plan = Plan::from_explicit_declarations(&files).unwrap();
+
+        // Simulate automatic detection
+        let mut source_identities = HashMap::new();
+        source_identities.insert("./automatic-1".to_string(), (1u64, 100u64));
+        source_identities.insert("./automatic-2".to_string(), (1u64, 100u64));
+
+        plan.add_filesystem_identities(&source_identities, &files)
+            .unwrap();
+
+        // Verify explicit members
+        let exp1 = plan.member("./explicit-1").unwrap();
+        assert_eq!(exp1.link_count, 2);
+
+        // Verify automatic members
+        let auto1 = plan.member("./automatic-1").unwrap();
+        assert_eq!(auto1.link_count, 2);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn explicit_takes_precedence_over_automatic_detection() {
+        // Two files that are hardlinked on filesystem but explicitly grouped differently
+        let mut files = BTreeMap::new();
+        files.insert("./file1".to_string(), entry("content", Some("explicit")));
+        files.insert("./file2".to_string(), entry("content", Some("explicit")));
+
+        let mut plan = Plan::from_explicit_declarations(&files).unwrap();
+
+        // Simulate automatic detection. Explicit declarations are filtered out.
+        let mut source_identities = HashMap::new();
+        source_identities.insert("./file1".to_string(), (1u64, 100u64));
+        source_identities.insert("./file2".to_string(), (1u64, 100u64));
+
+        plan.add_filesystem_identities(&source_identities, &files)
+            .unwrap();
+
+        // Both should use explicit source
+        let member1 = plan.member("./file1").unwrap();
+        let member2 = plan.member("./file2").unwrap();
+        assert_eq!(member1.inode, member2.inode); // Same hardlink group
     }
 }

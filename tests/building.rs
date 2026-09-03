@@ -883,124 +883,238 @@ fn test_epoch_handling() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Verify an explicit hardlink set receives one shared RPM inode and link count,
-/// with its content carried only by the set's completing payload member.
-#[test]
-fn explicit_hardlink_set_shares_header_identity_and_one_payload()
--> Result<(), Box<dyn std::error::Error>> {
-    let content = b"shared hardlink content";
-    let package = PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
+mod hardlinks {
+    use super::*;
+
+    /// Verify automatic hardlink detection also works for files added through `with_dir`.
+    #[cfg(unix)]
+    #[test]
+    fn with_dir_detects_automatic_hardlinks() -> Result<(), Box<dyn std::error::Error>> {
+        let source_dir = tempfile::tempdir()?;
+        let alpha_1 = source_dir.path().join("alpha-1");
+        std::fs::write(&alpha_1, b"shared content")?;
+        let alpha_2 = source_dir.path().join("alpha-2");
+        std::fs::hard_link(&alpha_1, &alpha_2)?;
+        std::fs::write(source_dir.path().join("standalone"), b"standalone")?;
+
+        let package = PackageBuilder::new(
+            "with-dir-hardlinks",
+            "1.0",
+            "MIT",
+            "noarch",
+            "with_dir hardlink test",
+        )
+        .with_dir(source_dir.path(), "/opt/with-dir-hardlinks", |options| {
+            options
+        })?
+        .build()?;
+
+        let entries = package.metadata.get_file_entries()?;
+        assert_eq!(
+            entries.iter().map(|entry| entry.path()).collect::<Vec<_>>(),
+            vec![
+                Path::new("/opt/with-dir-hardlinks"),
+                Path::new("/opt/with-dir-hardlinks/alpha-1"),
+                Path::new("/opt/with-dir-hardlinks/alpha-2"),
+                Path::new("/opt/with-dir-hardlinks/standalone"),
+            ]
+        );
+
+        let inodes = package
+            .metadata
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEINODES)?;
+        assert_eq!(inodes, vec![1, 2, 2, 4]);
+
+        let sizes = package
+            .metadata
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILESIZES)?;
+        assert_eq!(sizes, vec![0, 14, 14, 10]);
+
+        Ok(())
+    }
+
+    /// Replacing a bulk-added file must remove its old automatic hardlink identity.
+    #[cfg(unix)]
+    #[test]
+    fn replacing_with_dir_file_does_not_preserve_stale_hardlink_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source_dir = tempfile::tempdir()?;
+        let alpha_1 = source_dir.path().join("alpha-1");
+        std::fs::write(&alpha_1, b"original")?;
+        std::fs::hard_link(&alpha_1, source_dir.path().join("alpha-2"))?;
+
+        let package = PackageBuilder::new(
+            "with-dir-hardlinks",
+            "1.0",
+            "MIT",
+            "noarch",
+            "with_dir hardlink replacement test",
+        )
+        .with_dir(source_dir.path(), "/opt/with-dir-hardlinks", |options| {
+            options
+        })?
         .with_file_contents(
-            content,
-            FileOptions::new("/usr/lib/hardlinks/anchor")
-                .permissions(0o640)
-                .hardlink("payload:shared"),
-        )?
-        .with_file_contents(
-            content,
-            FileOptions::new("/usr/lib/hardlinks/alias")
-                .permissions(0o640)
-                .hardlink("payload:shared"),
+            "replacement",
+            FileOptions::new("/opt/with-dir-hardlinks/alpha-1"),
         )?
         .build()?;
 
-    let inodes = package
-        .metadata
-        .header
-        .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEINODES)?;
-    let devices = package
-        .metadata
-        .header
-        .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEDEVICES)?;
-    let sizes = package
-        .metadata
-        .header
-        .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILESIZES)?;
-    let digests = package
-        .metadata
-        .header
-        .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEDIGESTS)?;
-    assert_eq!(inodes.len(), 2);
-    assert_eq!(inodes[0], inodes[1]);
-    assert_eq!(devices, vec![1, 1]);
-    assert_eq!(sizes, vec![content.len() as u32; 2]);
-    assert_eq!(digests[0], digests[1]);
+        let inodes = package
+            .metadata
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEINODES)?;
+        assert_eq!(inodes, vec![1, 2, 3]);
 
-    let files = package.files()?.collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(files.len(), 2);
-    assert!(files[0].content.is_empty());
-    assert_eq!(files[1].content, content);
-    Ok(())
-}
+        Ok(())
+    }
 
-/// Reject incomplete hardlink sets (only one hardlink declared)
-#[test]
-fn explicit_hardlink_builder_rejects_partial_set() {
-    let partial = PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
-        .with_file_contents(
-            "same",
-            FileOptions::new("/anchor").hardlink("payload:partial"),
+    /// Automatic hardlink detection must reject package entries with incompatible metadata.
+    #[cfg(unix)]
+    #[test]
+    fn automatic_hardlinks_reject_metadata_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+        let source_dir = tempfile::tempdir()?;
+        let first = source_dir.path().join("first");
+        std::fs::write(&first, b"shared")?;
+        let second = source_dir.path().join("second");
+        std::fs::hard_link(&first, &second)?;
+
+        let error = PackageBuilder::new(
+            "automatic-hardlinks",
+            "1.0",
+            "MIT",
+            "noarch",
+            "automatic hardlink metadata test",
         )
-        .unwrap()
-        .build();
-    assert!(
-        partial
-            .unwrap_err()
-            .to_string()
-            .contains("at least two package files")
-    );
-}
+        .with_file(&first, FileOptions::new("/first").permissions(0o644))?
+        .with_file(&second, FileOptions::new("/second").permissions(0o600))?
+        .build()
+        .expect_err("incompatible automatic hardlink metadata should be rejected");
 
-/// Reject hardlink sets where the content differs between members,
-/// since they cannot represent one installed filesystem inode.
-#[test]
-fn explicit_hardlink_builder_rejects_content_mismatch() {
-    let content_mismatch =
-        PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
-            .with_file_contents(
-                "first",
-                FileOptions::new("/anchor").hardlink("payload:content"),
-            )
-            .unwrap()
-            .with_file_contents(
-                "second",
-                FileOptions::new("/alias").hardlink("payload:content"),
-            )
-            .unwrap()
-            .build();
-    assert!(
-        content_mismatch
-            .unwrap_err()
-            .to_string()
-            .contains("identical content")
-    );
-}
+        assert!(error.to_string().contains("identical effective metadata"));
+        Ok(())
+    }
 
-/// Reject hardlink sets where the effective metadata differs etween members,
-/// since they cannot represent one installed filesystem inode.
-#[test]
-fn explicit_hardlink_builder_rejects_metadata_mismatch() {
-    let metadata_mismatch =
-        PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
+    /// Verify an explicit hardlink set receives one shared RPM inode and link count,
+    /// with its content carried only by the set's completing payload member.
+    #[test]
+    fn explicit_hardlink_set_shares_header_identity_and_one_payload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let content = b"shared hardlink content";
+        let package = PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
             .with_file_contents(
-                "same",
-                FileOptions::new("/anchor")
+                content,
+                FileOptions::new("/usr/lib/hardlinks/anchor")
                     .permissions(0o640)
-                    .hardlink("payload:metadata"),
-            )
-            .unwrap()
+                    .hardlink("payload:shared"),
+            )?
+            .with_file_contents(
+                content,
+                FileOptions::new("/usr/lib/hardlinks/alias")
+                    .permissions(0o640)
+                    .hardlink("payload:shared"),
+            )?
+            .build()?;
+
+        let inodes = package
+            .metadata
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEINODES)?;
+        let devices = package
+            .metadata
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEDEVICES)?;
+        let sizes = package
+            .metadata
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILESIZES)?;
+        let digests = package
+            .metadata
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEDIGESTS)?;
+        assert_eq!(inodes.len(), 2);
+        assert_eq!(inodes[0], inodes[1]);
+        assert_eq!(devices, vec![1, 1]);
+        assert_eq!(sizes, vec![content.len() as u32; 2]);
+        assert_eq!(digests[0], digests[1]);
+
+        let files = package.files()?.collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(files.len(), 2);
+        assert!(files[0].content.is_empty());
+        assert_eq!(files[1].content, content);
+        Ok(())
+    }
+
+    /// Reject incomplete hardlink sets (only one hardlink declared)
+    #[test]
+    fn explicit_hardlink_builder_rejects_partial_set() {
+        let partial = PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
             .with_file_contents(
                 "same",
-                FileOptions::new("/alias")
-                    .permissions(0o600)
-                    .hardlink("payload:metadata"),
+                FileOptions::new("/anchor").hardlink("payload:partial"),
             )
             .unwrap()
             .build();
-    assert!(
-        metadata_mismatch
-            .unwrap_err()
-            .to_string()
-            .contains("identical effective metadata")
-    );
+        assert!(
+            partial
+                .unwrap_err()
+                .to_string()
+                .contains("at least two package files")
+        );
+    }
+
+    /// Reject hardlink sets where the content differs between members,
+    /// since they cannot represent one installed filesystem inode.
+    #[test]
+    fn explicit_hardlink_builder_rejects_content_mismatch() {
+        let content_mismatch =
+            PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
+                .with_file_contents(
+                    "first",
+                    FileOptions::new("/anchor").hardlink("payload:content"),
+                )
+                .unwrap()
+                .with_file_contents(
+                    "second",
+                    FileOptions::new("/alias").hardlink("payload:content"),
+                )
+                .unwrap()
+                .build();
+        assert!(
+            content_mismatch
+                .unwrap_err()
+                .to_string()
+                .contains("identical content")
+        );
+    }
+
+    /// Reject hardlink sets where the effective metadata differs etween members,
+    /// since they cannot represent one installed filesystem inode.
+    #[test]
+    fn explicit_hardlink_builder_rejects_metadata_mismatch() {
+        let metadata_mismatch =
+            PackageBuilder::new("hardlinks", "1.0", "MIT", "noarch", "hardlink test")
+                .with_file_contents(
+                    "same",
+                    FileOptions::new("/anchor")
+                        .permissions(0o640)
+                        .hardlink("payload:metadata"),
+                )
+                .unwrap()
+                .with_file_contents(
+                    "same",
+                    FileOptions::new("/alias")
+                        .permissions(0o600)
+                        .hardlink("payload:metadata"),
+                )
+                .unwrap()
+                .build();
+        assert!(
+            metadata_mismatch
+                .unwrap_err()
+                .to_string()
+                .contains("identical effective metadata")
+        );
+    }
 }

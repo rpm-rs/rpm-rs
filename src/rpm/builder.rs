@@ -2,7 +2,7 @@
 
 mod hardlinks;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
 use std::io::Read;
 
@@ -251,6 +251,11 @@ pub struct PackageBuilder {
     default_file_attrs: FileDefaults,
     /// Default ownership and permissions for directory entries (like the dirmode in `%defattr`).
     default_dir_attrs: FileDefaults,
+
+    /// Maps cpio_path -> (dev, ino) for files added via `with_file()`.
+    /// Used for automatic hardlink detection on Unix platforms.
+    #[cfg(unix)]
+    source_identities: HashMap<String, (u64, u64)>,
 
     /// Whether `build()` or `build_and_sign()` has already been called.
     consumed: bool,
@@ -562,6 +567,8 @@ impl PackageBuilder {
             modified_at,
             options,
             false,
+            #[cfg(unix)]
+            Some(&metadata),
         )?;
         Ok(self)
     }
@@ -617,6 +624,8 @@ impl PackageBuilder {
             self.config.source_date.unwrap_or(Timestamp::now()),
             options,
             false,
+            #[cfg(unix)]
+            None,
         )?;
         Ok(self)
     }
@@ -655,6 +664,8 @@ impl PackageBuilder {
             self.config.source_date.unwrap_or(Timestamp::now()),
             options,
             false,
+            #[cfg(unix)]
+            None,
         )?;
         Ok(self)
     }
@@ -697,6 +708,8 @@ impl PackageBuilder {
             self.config.source_date.unwrap_or(Timestamp::now()),
             options,
             false,
+            #[cfg(unix)]
+            None,
         )?;
         Ok(self)
     }
@@ -739,6 +752,8 @@ impl PackageBuilder {
             self.config.source_date.unwrap_or(Timestamp::now()),
             options,
             false,
+            #[cfg(unix)]
+            None,
         )?;
         Ok(self)
     }
@@ -820,6 +835,8 @@ impl PackageBuilder {
             self.config.source_date.unwrap_or(Timestamp::now()),
             dir_options,
             true,
+            #[cfg(unix)]
+            None,
         )?;
 
         for entry in fs::read_dir(source_dir)? {
@@ -841,6 +858,8 @@ impl PackageBuilder {
                     self.config.source_date.unwrap_or(Timestamp::now()),
                     options.into(),
                     true,
+                    #[cfg(unix)]
+                    None,
                 )?;
             } else {
                 let modified_at: Timestamp = metadata.modified()?.try_into()?;
@@ -863,6 +882,8 @@ impl PackageBuilder {
                     modified_at,
                     options,
                     true,
+                    #[cfg(unix)]
+                    Some(&metadata),
                 )?;
             }
         }
@@ -876,6 +897,7 @@ impl PackageBuilder {
         modified_at: Timestamp,
         mut options: FileOptions,
         bulk: bool,
+        #[cfg(unix)] source_metadata: Option<&fs::Metadata>,
     ) -> Result<(), Error> {
         // Apply builder-level defaults for ownership and permissions where
         // the FileOptions hasn't been explicitly overridden.
@@ -992,6 +1014,18 @@ impl PackageBuilder {
             // An explicit add replaces a bulk-added entry (fall through to insert below).
         }
 
+        // Populate source_identities for automatic hardlink detection on Unix.
+        // Only track files without explicit hardlink_identity to avoid conflicts.
+        // Check BEFORE moving hardlink_identity into the entry.
+        #[cfg(unix)]
+        let should_track_identity =
+            source_metadata.is_some() && options.hardlink_identity.is_none();
+
+        // An explicit entry can replace a bulk-added entry. Remove the old source
+        // identity so automatic detection reflects the replacement entry.
+        #[cfg(unix)]
+        self.source_identities.remove(&cpio_path);
+
         let entry = PackageFileEntry {
             // file_name() should never fail because we've checked the special cases already
             base_name: pb.file_name().unwrap().to_string_lossy().to_string(),
@@ -1010,6 +1044,15 @@ impl PackageBuilder {
         };
 
         self.directories.insert(dir);
+
+        #[cfg(unix)]
+        if should_track_identity {
+            use std::os::unix::fs::MetadataExt;
+            let meta = source_metadata.unwrap(); // Safe because we checked is_some() above
+            self.source_identities
+                .insert(cpio_path.clone(), (meta.dev(), meta.ino()));
+        }
+
         self.files.insert(cpio_path, entry);
         Ok(())
     }
@@ -1528,7 +1571,12 @@ impl PackageBuilder {
     /// @todo split this into multiple `fn`s, one per `IndexTag`-group.
     fn prepare_data(mut self) -> Result<(Lead, Header<IndexTag>, Vec<u8>), Error> {
         self.pre_build_validation()?;
-        let hardlinks = hardlinks::Plan::from_files(&self.files)?;
+
+        // Build the hardlink plan from explicit declarations and automatic detection.
+        let mut hardlinks = hardlinks::Plan::from_explicit_declarations(&self.files)?;
+
+        #[cfg(unix)]
+        hardlinks.add_filesystem_identities(&self.source_identities, &self.files)?;
 
         // signature depends on header and payload. So we build these two first.
         // then the signature. Then we stitch all together.
