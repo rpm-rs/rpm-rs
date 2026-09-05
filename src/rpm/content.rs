@@ -280,21 +280,45 @@ impl<'a> Iterator for FileIterator<'a> {
                 }));
             }
 
-            while self.ghost_index < self.ghosts.len() {
-                let file_index = self.ghosts[self.ghost_index];
-                self.ghost_index += 1;
-                if !self.seen[file_index] {
-                    self.seen[file_index] = true;
-                    self.count += 1;
-                    return Some(Ok(RpmFile {
-                        metadata: self.file_entries[file_index].clone(),
-                        content: Vec::new(),
-                    }));
-                }
+            if let Some(file_index) = next_ghost(
+                &self.ghosts,
+                &mut self.ghost_index,
+                &mut self.seen,
+                &mut self.count,
+            ) {
+                return Some(Ok(RpmFile {
+                    metadata: self.file_entries[file_index].clone(),
+                    content: Vec::new(),
+                }));
             }
             return None;
         }
     }
+}
+
+/// Return the next unseen ghost and mark it as yielded.
+///
+/// Ghosts may already have been matched to a payload entry in malformed or
+/// legacy packages, so those entries are skipped here. The returned entry is
+/// marked in `seen` and included in `count` before it is returned.
+///
+/// Shared between the streaming `PackageReader` and `FileIterator` implementations.
+fn next_ghost(
+    ghosts: &[usize],
+    ghost_index: &mut usize,
+    seen: &mut [bool],
+    count: &mut usize,
+) -> Option<usize> {
+    while *ghost_index < ghosts.len() {
+        let file_index = ghosts[*ghost_index];
+        *ghost_index += 1;
+        if !seen[file_index] {
+            seen[file_index] = true;
+            *count += 1;
+            return Some(file_index);
+        }
+    }
+    None
 }
 
 fn cpio_path_matches(name: &str, entry: &FileEntry<'_>) -> bool {
@@ -454,17 +478,16 @@ impl PackageReader {
             self.payload_done = true;
         }
 
-        while self.ghost_index < self.ghosts.len() {
-            let file_index = self.ghosts[self.ghost_index];
-            self.ghost_index += 1;
-            if !self.seen[file_index] {
-                self.seen[file_index] = true;
-                self.count += 1;
-                return Ok(Some(StreamingRpmFile {
-                    metadata: self.file_entries[file_index].clone(),
-                    reader: None,
-                }));
-            }
+        if let Some(file_index) = next_ghost(
+            &self.ghosts,
+            &mut self.ghost_index,
+            &mut self.seen,
+            &mut self.count,
+        ) {
+            return Ok(Some(StreamingRpmFile {
+                metadata: self.file_entries[file_index].clone(),
+                reader: None,
+            }));
         }
         Ok(None)
     }

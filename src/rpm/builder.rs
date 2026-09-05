@@ -2,6 +2,7 @@
 
 mod hardlinks;
 
+#[allow(unused_imports)]
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
 use std::io::Read;
@@ -1573,6 +1574,7 @@ impl PackageBuilder {
         self.pre_build_validation()?;
 
         // Build the hardlink plan from explicit declarations and automatic detection.
+        #[allow(unused_mut)]
         let mut hardlinks = hardlinks::Plan::from_explicit_declarations(&self.files)?;
 
         #[cfg(unix)]
