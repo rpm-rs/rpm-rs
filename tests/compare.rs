@@ -829,6 +829,11 @@ fn test_build_rpm_rich_deps() -> Result<(), Box<dyn std::error::Error>> {
 /// - Three hardlinked files (alpha-1, alpha-2, alpha-3) sharing content
 /// - Two hardlinked files (beta-1, beta-2) sharing content
 /// - One standalone file
+///
+/// Automatic filesystem hardlink detection currently uses Unix device and inode
+/// metadata, so this comparison is only meaningful on Unix platforms. The
+/// explicit hardlink API is tested on all platforms below.
+#[cfg(unix)]
 #[test]
 fn test_build_rpm_hardlinks_implicit() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = std::env::temp_dir().join("rpm-rs-implicit-hardlinks-test");
