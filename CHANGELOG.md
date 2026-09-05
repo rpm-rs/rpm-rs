@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Explicit root-child entries such as `/usr` now use `/` as their RPM header dirname instead of `//`.
 - `Package::files()` now associates payload contents with the correct file metadata when payload and header entry orders differ.
+- `Package::files()` and `PackageReader` now iterate entries in payload order; ghost entries are returned afterward.
 
 ### Added
 

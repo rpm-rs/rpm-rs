@@ -1505,6 +1505,9 @@ impl PackageMetadata {
 
     /// Get a list of metadata about the files in the RPM, without the file contents.
     ///
+    /// Entries are returned in RPM header order. This may differ from the payload
+    /// order returned by [`Package::files`](crate::Package::files).
+    ///
     /// # Examples
     ///
     /// ```

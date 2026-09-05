@@ -1,6 +1,6 @@
 //! Access and extract RPM package payload contents (files, directories, symlinks).
 
-use std::{collections::HashMap, fs, io, io::Read, path::Path};
+use std::{fs, io, io::Read, path::Path};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -44,7 +44,11 @@ fn symlink(_original: &Path, _link: &Path) -> Result<(), Error> {
 }
 
 impl Package {
-    /// Iterate over the file contents of the package payload
+    /// Iterate over the file contents of the package payload.
+    ///
+    /// Entries are returned in payload order, which may differ from the order of
+    /// [`PackageMetadata::get_file_entries()`]. Ghost entries, which have no
+    /// payload representation, are returned after payload entries.
     ///
     /// # Examples
     ///
@@ -60,13 +64,22 @@ impl Package {
     /// ```
     pub fn files(&self) -> Result<FileIterator<'_>, Error> {
         let file_entries = self.metadata.get_file_entries()?;
+        let ghosts = file_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| entry.flags.contains(FileFlags::GHOST).then_some(index))
+            .collect();
+        let file_count = file_entries.len();
         let archive = decompress_stream(io::Cursor::new(&self.payload))?;
 
         Ok(FileIterator {
             file_entries,
             archive,
             count: 0,
-            pending: HashMap::new(),
+            payload_done: false,
+            ghosts,
+            ghost_index: 0,
+            seen: vec![false; file_count],
         })
     }
 
@@ -164,8 +177,16 @@ impl Package {
 pub struct FileIterator<'a> {
     file_entries: Vec<FileEntry<'a>>,
     archive: Box<dyn io::Read + 'a>,
+    /// Number of entries yielded, including ghosts emitted after the payload.
     count: usize,
-    pending: HashMap<usize, Vec<u8>>,
+    /// Set after the CPIO trailer has been consumed; subsequent entries are ghosts.
+    payload_done: bool,
+    /// Header indexes for entries that have no payload record.
+    ghosts: Vec<usize>,
+    /// Position of the next ghost to consider.
+    ghost_index: usize,
+    /// Tracks header entries already matched to a payload record or emitted as ghosts.
+    seen: Vec<bool>,
 }
 
 #[derive(Debug)]
@@ -191,68 +212,87 @@ impl<'a> Iterator for FileIterator<'a> {
             return None;
         }
 
-        let file_index = self.count;
-        // @todo: probably safe to hand out a reference instead of cloning, just a bit more painful
-        let file_entry = self.file_entries[file_index].clone();
-        self.count += 1;
-
-        // Ghost files are not in the payload archive, so return them immediately with empty content
-        if file_entry.flags.contains(FileFlags::GHOST) {
-            return Some(Ok(RpmFile {
-                metadata: file_entry,
-                content: Vec::new(),
-            }));
-        }
-
-        if let Some(content) = self.pending.remove(&file_index) {
-            return Some(Ok(RpmFile {
-                metadata: file_entry,
-                content,
-            }));
-        }
-
         loop {
-            let reader = payload::Reader::new(&mut self.archive, &self.file_entries);
+            if !self.payload_done {
+                let reader = payload::Reader::new(&mut self.archive, &self.file_entries);
 
-            let mut entry_reader = match reader {
-                Ok(reader) => reader,
-                Err(e) => return Some(Err(Error::Io(e))),
-            };
-            if entry_reader.is_trailer() {
-                return None;
-            }
+                let mut entry_reader = match reader {
+                    Ok(reader) => reader,
+                    Err(e) => return Some(Err(Error::Io(e))),
+                };
+                if entry_reader.is_trailer() {
+                    // Ghosts are not represented in the payload, so emit them only after
+                    // all payload entries have been returned.
+                    self.payload_done = true;
+                    continue;
+                }
 
-            let payload_index = match entry_reader.stripped_file_index().or_else(|| {
-                entry_reader.cpio_name().and_then(|name| {
-                    self.file_entries
-                        .iter()
-                        .position(|entry| cpio_path_matches(name, entry))
-                })
-            }) {
-                Some(index) => index,
-                None => {
+                // CPIO payload order is independent of RPM header order. Resolve the
+                // payload record to its header entry before returning it.
+                let payload_index = match entry_reader.stripped_file_index().or_else(|| {
+                    entry_reader.cpio_name().and_then(|name| {
+                        self.file_entries
+                            .iter()
+                            .position(|entry| cpio_path_matches(name, entry))
+                    })
+                }) {
+                    Some(index) => index,
+                    None => {
+                        return Some(Err(Error::Io(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "payload entry does not match an RPM file header",
+                        ))));
+                    }
+                };
+                // Older RPMs could incorrectly include ghosts in the payload. Drain the
+                // record so the archive remains readable, but emit the ghost below with the
+                // other header-only entries.
+                if self.file_entries[payload_index]
+                    .flags
+                    .contains(FileFlags::GHOST)
+                {
+                    if let Err(e) = entry_reader.finish() {
+                        return Some(Err(Error::Io(e)));
+                    }
+                    continue;
+                }
+
+                if self.seen[payload_index] {
                     return Some(Err(Error::Io(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "payload entry does not match an RPM file header",
+                        "payload contains a duplicate RPM file entry",
                     ))));
                 }
-            };
 
-            let mut content = Vec::new();
-            if let Err(e) = entry_reader.read_to_end(&mut content) {
-                return Some(Err(Error::Io(e)));
-            }
-            if let Err(e) = entry_reader.finish() {
-                return Some(Err(Error::Io(e)));
-            }
+                let mut content = Vec::new();
+                if let Err(e) = entry_reader.read_to_end(&mut content) {
+                    return Some(Err(Error::Io(e)));
+                }
+                if let Err(e) = entry_reader.finish() {
+                    return Some(Err(Error::Io(e)));
+                }
 
-            if payload_index == file_index {
+                self.seen[payload_index] = true;
+                self.count += 1;
                 return Some(Ok(RpmFile {
-                    metadata: file_entry,
+                    metadata: self.file_entries[payload_index].clone(),
                     content,
                 }));
             }
-            self.pending.insert(payload_index, content);
+
+            while self.ghost_index < self.ghosts.len() {
+                let file_index = self.ghosts[self.ghost_index];
+                self.ghost_index += 1;
+                if !self.seen[file_index] {
+                    self.seen[file_index] = true;
+                    self.count += 1;
+                    return Some(Ok(RpmFile {
+                        metadata: self.file_entries[file_index].clone(),
+                        content: Vec::new(),
+                    }));
+                }
+            }
+            return None;
         }
     }
 }
@@ -277,6 +317,7 @@ impl ExactSizeIterator for FileIterator<'_> {
 ///
 /// Ghost files (not present in the payload archive) are returned with an empty
 /// body, matching the behaviour of [`Package::files`].
+/// Entries are returned in payload order; ghost entries are returned afterward.
 ///
 /// # Note on iteration
 ///
@@ -314,7 +355,16 @@ pub struct PackageReader {
     pub metadata: PackageMetadata,
     file_entries: Vec<FileEntry<'static>>,
     archive: Box<dyn Read>,
+    /// Number of entries yielded, including ghosts emitted after the payload.
     count: usize,
+    /// Set after the CPIO trailer has been consumed; subsequent entries are ghosts.
+    payload_done: bool,
+    /// Header indexes for entries that have no payload record.
+    ghosts: Vec<usize>,
+    /// Position of the next ghost to consider.
+    ghost_index: usize,
+    /// Tracks header entries already matched to a payload record or emitted as ghosts.
+    seen: Vec<bool>,
 }
 
 #[cfg(feature = "payload")]
@@ -335,17 +385,27 @@ impl PackageReader {
     /// on demand as you call [`next_file`](Self::next_file).
     pub fn parse(mut input: impl io::BufRead + 'static) -> Result<Self, Error> {
         let metadata = PackageMetadata::parse(&mut input)?;
-        let file_entries = metadata
+        let file_entries: Vec<_> = metadata
             .get_file_entries()?
             .into_iter()
             .map(|e| e.into_owned())
             .collect();
+        let ghosts = file_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| entry.flags.contains(FileFlags::GHOST).then_some(index))
+            .collect();
+        let file_count = file_entries.len();
         let archive = decompress_stream(input)?;
         Ok(PackageReader {
             metadata,
             file_entries,
             archive,
             count: 0,
+            payload_done: false,
+            ghosts,
+            ghost_index: 0,
+            seen: vec![false; file_count],
         })
     }
 
@@ -358,36 +418,55 @@ impl PackageReader {
     /// decompression stream. Drop it or call [`StreamingRpmFile::finish`] before
     /// calling `next_file` again.
     pub fn next_file(&mut self) -> Result<Option<StreamingRpmFile<'_>>, Error> {
-        if self.count >= self.file_entries.len() {
-            return Ok(None);
+        if !self.payload_done {
+            let reader =
+                payload::Reader::new(&mut self.archive, &self.file_entries).map_err(Error::Io)?;
+            if !reader.is_trailer() {
+                let file_index = reader
+                    .stripped_file_index()
+                    .or_else(|| {
+                        reader.cpio_name().and_then(|name| {
+                            self.file_entries
+                                .iter()
+                                .position(|entry| cpio_path_matches(name, entry))
+                        })
+                    })
+                    .ok_or_else(|| {
+                        Error::Io(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "payload entry does not match an RPM file header",
+                        ))
+                    })?;
+                if self.seen[file_index] {
+                    return Err(Error::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "payload contains a duplicate RPM file entry",
+                    )));
+                }
+                self.seen[file_index] = true;
+                self.count += 1;
+
+                return Ok(Some(StreamingRpmFile {
+                    metadata: self.file_entries[file_index].clone(),
+                    reader: Some(reader),
+                }));
+            }
+            self.payload_done = true;
         }
 
-        let metadata = self.file_entries[self.count].clone();
-        self.count += 1;
-
-        // Assumes CPIO entries appear in the same order as header file entries.
-        // This is guaranteed by RPM's build process but not formally validated here.
-
-        // Ghost files are not present in the payload archive; return them with
-        // no reader (reads will immediately return Ok(0)).
-        if metadata.flags.contains(FileFlags::GHOST) {
-            return Ok(Some(StreamingRpmFile {
-                metadata,
-                reader: None,
-            }));
+        while self.ghost_index < self.ghosts.len() {
+            let file_index = self.ghosts[self.ghost_index];
+            self.ghost_index += 1;
+            if !self.seen[file_index] {
+                self.seen[file_index] = true;
+                self.count += 1;
+                return Ok(Some(StreamingRpmFile {
+                    metadata: self.file_entries[file_index].clone(),
+                    reader: None,
+                }));
+            }
         }
-
-        let reader =
-            payload::Reader::new(&mut self.archive, &self.file_entries).map_err(Error::Io)?;
-
-        if reader.is_trailer() {
-            return Ok(None);
-        }
-
-        Ok(Some(StreamingRpmFile {
-            metadata,
-            reader: Some(reader),
-        }))
+        Ok(None)
     }
 }
 
@@ -948,12 +1027,12 @@ mod test_payload_integration {
     }
 
     /// Helper function to verify that files(), get_file_entries(), and get_file_paths()
-    /// all return consistent data in the same order. Returns the files Vec for further assertions.
+    /// all return the same entries. Returns files sorted in header order for fixture assertions.
     #[track_caller]
     fn assert_file_apis_consistent(
         package: &Package,
     ) -> Result<Vec<RpmFile<'_>>, Box<dyn std::error::Error>> {
-        let files: Vec<RpmFile> = package.files()?.collect::<Result<Vec<_>, _>>()?;
+        let mut files: Vec<RpmFile> = package.files()?.collect::<Result<Vec<_>, _>>()?;
         let metadata_entries = package.metadata.get_file_entries()?;
         let file_paths = package.metadata.get_file_paths()?;
 
@@ -972,35 +1051,22 @@ mod test_payload_integration {
             file_paths.len()
         );
 
-        // Verify that all three APIs return data in the same order
-        for (i, ((file, meta), path)) in files
-            .iter()
-            .zip(metadata_entries.iter())
-            .zip(file_paths.iter())
-            .enumerate()
-        {
-            assert_eq!(
-                file.metadata.path(),
-                meta.path(),
-                "Path mismatch at index {}: files() has {:?} but get_file_entries() has {:?}",
-                i,
-                file.metadata.path(),
-                meta.path()
-            );
-            assert_eq!(
-                file.metadata.path(),
-                *path,
-                "Path mismatch at index {}: files() has {:?} but get_file_paths() has {:?}",
-                i,
-                file.metadata.path(),
-                path
-            );
-            assert_eq!(
-                file.metadata, *meta,
-                "Full metadata mismatch at index {}: files() differs from get_file_entries()",
-                i
-            );
+        for file in &files {
+            let path = file.metadata.path();
+            let index = metadata_entries
+                .iter()
+                .position(|entry| entry.path() == path)
+                .unwrap_or_else(|| panic!("files() returned unexpected path {path:?}"));
+            assert_eq!(file.metadata, metadata_entries[index]);
+            assert!(file_paths.contains(&path));
         }
+
+        files.sort_by_key(|file| {
+            metadata_entries
+                .iter()
+                .position(|entry| entry.path() == file.metadata.path())
+                .expect("file was checked above")
+        });
 
         Ok(files)
     }

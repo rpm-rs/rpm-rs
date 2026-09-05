@@ -934,6 +934,18 @@ mod hardlinks {
 
         let files = package.files()?.collect::<Result<Vec<_>, _>>()?;
         assert_eq!(files.len(), 4);
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.metadata.path())
+                .collect::<Vec<_>>(),
+            vec![
+                Path::new("/opt/with-dir-hardlinks"),
+                Path::new("/opt/with-dir-hardlinks/standalone"),
+                Path::new("/opt/with-dir-hardlinks/alpha-1"),
+                Path::new("/opt/with-dir-hardlinks/alpha-2"),
+            ]
+        );
         let content = |path: &str| {
             &files
                 .iter()
