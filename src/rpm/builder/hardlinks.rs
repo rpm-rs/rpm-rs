@@ -3,6 +3,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 
+#[cfg(unix)]
+use std::{collections::BTreeSet, path::Path};
+
 use sha2::{Digest, Sha256};
 
 use super::PackageFileEntry;
@@ -88,12 +91,12 @@ impl Plan {
     #[cfg(unix)]
     pub(super) fn add_filesystem_identities(
         &mut self,
-        source_identities: &HashMap<String, (u64, u64)>,
+        source_identities: &HashMap<String, (u64, u64, std::path::PathBuf)>,
         files: &BTreeMap<String, PackageFileEntry>,
     ) -> Result<(), Error> {
         // Group cpio paths by (dev, ino)
-        let mut identity_groups: BTreeMap<(u64, u64), Vec<&str>> = BTreeMap::new();
-        for (path, identity) in source_identities {
+        let mut identity_groups: BTreeMap<(u64, u64), Vec<(&str, &Path)>> = BTreeMap::new();
+        for (path, (dev, ino, source_path)) in source_identities {
             let Some(entry) = files.get(path) else {
                 continue;
             };
@@ -101,23 +104,35 @@ impl Plan {
             if entry.hardlink_identity.is_some() {
                 continue;
             }
-            identity_groups.entry(*identity).or_default().push(path);
+            identity_groups
+                .entry((*dev, *ino))
+                .or_default()
+                .push((path, source_path));
         }
 
         for paths in identity_groups.values_mut() {
             if paths.len() < 2 {
                 continue; // Not a hardlink group
             }
-            paths.sort_unstable();
+            // Reusing one source path for multiple package destinations is not evidence of a
+            // hardlink. Leave such groups alone; callers may intentionally assign different
+            // metadata to those package entries.
+            let source_paths: BTreeSet<_> = paths.iter().map(|(_, source)| *source).collect();
+            if source_paths.len() != paths.len() {
+                continue;
+            }
+            paths.sort_unstable_by_key(|(path, _)| *path);
 
-            let entries: Vec<(&str, &PackageFileEntry)> =
-                paths.iter().map(|p| (*p, &files[*p])).collect();
+            let entries: Vec<(&str, &PackageFileEntry)> = paths
+                .iter()
+                .map(|(path, _)| (*path, &files[*path]))
+                .collect();
             validate_group(&entries)?;
 
             // Assign shared inode based on first file's position in BTreeMap
             let inode = files
                 .keys()
-                .position(|k| paths.contains(&k.as_str()))
+                .position(|k| paths.iter().any(|(path, _)| *path == k.as_str()))
                 .expect("path in source_identities must exist in files")
                 .checked_add(1)
                 .and_then(|v| u32::try_from(v).ok())
@@ -135,10 +150,10 @@ impl Plan {
             let last_path = files
                 .keys()
                 .rev()
-                .find(|k| paths.contains(&k.as_str()))
+                .find(|k| paths.iter().any(|(path, _)| *path == k.as_str()))
                 .expect("path in source_identities must exist in files");
 
-            for path in paths {
+            for (path, _) in paths {
                 self.members.insert(
                     (*path).to_string(),
                     Member {
@@ -350,8 +365,14 @@ mod tests {
 
         // Simulate automatic detection
         let mut source_identities = HashMap::new();
-        source_identities.insert("./automatic-1".to_string(), (1u64, 100u64));
-        source_identities.insert("./automatic-2".to_string(), (1u64, 100u64));
+        source_identities.insert(
+            "./automatic-1".to_string(),
+            (1u64, 100u64, std::path::PathBuf::from("/tmp/automatic-1")),
+        );
+        source_identities.insert(
+            "./automatic-2".to_string(),
+            (1u64, 100u64, std::path::PathBuf::from("/tmp/automatic-2")),
+        );
 
         plan.add_filesystem_identities(&source_identities, &files)
             .unwrap();
@@ -377,8 +398,14 @@ mod tests {
 
         // Simulate automatic detection. Explicit declarations are filtered out.
         let mut source_identities = HashMap::new();
-        source_identities.insert("./file1".to_string(), (1u64, 100u64));
-        source_identities.insert("./file2".to_string(), (1u64, 100u64));
+        source_identities.insert(
+            "./file1".to_string(),
+            (1u64, 100u64, std::path::PathBuf::from("/tmp/file1")),
+        );
+        source_identities.insert(
+            "./file2".to_string(),
+            (1u64, 100u64, std::path::PathBuf::from("/tmp/file2")),
+        );
 
         plan.add_filesystem_identities(&source_identities, &files)
             .unwrap();

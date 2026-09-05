@@ -964,6 +964,30 @@ mod hardlinks {
         Ok(())
     }
 
+    /// Reusing one source path for different package entries must not create a hardlink set.
+    #[cfg(unix)]
+    #[test]
+    fn reusing_source_path_does_not_detect_hardlinks() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let source = temp_dir.path().join("source");
+        std::fs::write(&source, b"shared content")?;
+
+        let package =
+            PackageBuilder::new("source-reuse", "1.0", "MIT", "noarch", "source reuse test")
+                .with_file(&source, FileOptions::new("/first").permissions(0o644))?
+                .with_file(&source, FileOptions::new("/second").permissions(0o600))?
+                .build()?;
+
+        let inodes = package
+            .metadata
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEINODES)?;
+        assert_eq!(inodes.len(), 2);
+        assert_ne!(inodes[0], inodes[1]);
+
+        Ok(())
+    }
+
     /// Replacing a bulk-added file must remove its old automatic hardlink identity.
     #[cfg(unix)]
     #[test]

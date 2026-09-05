@@ -253,10 +253,10 @@ pub struct PackageBuilder {
     /// Default ownership and permissions for directory entries (like the dirmode in `%defattr`).
     default_dir_attrs: FileDefaults,
 
-    /// Maps cpio_path -> (dev, ino) for files added via `with_file()`.
+    /// Maps cpio_path -> (dev, ino, source path) for files added via `with_file()`.
     /// Used for automatic hardlink detection on Unix platforms.
     #[cfg(unix)]
-    source_identities: HashMap<String, (u64, u64)>,
+    source_identities: HashMap<String, (u64, u64, std::path::PathBuf)>,
 
     /// Whether `build()` or `build_and_sign()` has already been called.
     consumed: bool,
@@ -1022,6 +1022,12 @@ impl PackageBuilder {
         let should_track_identity =
             source_metadata.is_some() && options.hardlink_identity.is_none();
 
+        #[cfg(unix)]
+        let source_path = match &content_source {
+            ContentSource::Path(path) if should_track_identity => Some(fs::canonicalize(path)?),
+            _ => None,
+        };
+
         // An explicit entry can replace a bulk-added entry. Remove the old source
         // identity so automatic detection reflects the replacement entry.
         #[cfg(unix)]
@@ -1050,8 +1056,14 @@ impl PackageBuilder {
         if should_track_identity {
             use std::os::unix::fs::MetadataExt;
             let meta = source_metadata.unwrap(); // Safe because we checked is_some() above
-            self.source_identities
-                .insert(cpio_path.clone(), (meta.dev(), meta.ino()));
+            self.source_identities.insert(
+                cpio_path.clone(),
+                (
+                    meta.dev(),
+                    meta.ino(),
+                    source_path.expect("tracked source path"),
+                ),
+            );
         }
 
         self.files.insert(cpio_path, entry);
