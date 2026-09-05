@@ -1,6 +1,6 @@
 //! Access and extract RPM package payload contents (files, directories, symlinks).
 
-use std::{fs, io, io::Read, path::Path};
+use std::{collections::HashMap, fs, io, io::Read, path::Path};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -66,6 +66,7 @@ impl Package {
             file_entries,
             archive,
             count: 0,
+            pending: HashMap::new(),
         })
     }
 
@@ -164,6 +165,7 @@ pub struct FileIterator<'a> {
     file_entries: Vec<FileEntry<'a>>,
     archive: Box<dyn io::Read + 'a>,
     count: usize,
+    pending: HashMap<usize, Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -189,8 +191,9 @@ impl<'a> Iterator for FileIterator<'a> {
             return None;
         }
 
+        let file_index = self.count;
         // @todo: probably safe to hand out a reference instead of cloning, just a bit more painful
-        let file_entry = self.file_entries[self.count].clone();
+        let file_entry = self.file_entries[file_index].clone();
         self.count += 1;
 
         // Ghost files are not in the payload archive, so return them immediately with empty content
@@ -201,31 +204,64 @@ impl<'a> Iterator for FileIterator<'a> {
             }));
         }
 
-        let reader = payload::Reader::new(&mut self.archive, &self.file_entries);
+        if let Some(content) = self.pending.remove(&file_index) {
+            return Some(Ok(RpmFile {
+                metadata: file_entry,
+                content,
+            }));
+        }
 
-        match reader {
-            Ok(mut entry_reader) => {
-                if entry_reader.is_trailer() {
-                    return None;
+        loop {
+            let reader = payload::Reader::new(&mut self.archive, &self.file_entries);
+
+            let mut entry_reader = match reader {
+                Ok(reader) => reader,
+                Err(e) => return Some(Err(Error::Io(e))),
+            };
+            if entry_reader.is_trailer() {
+                return None;
+            }
+
+            let payload_index = match entry_reader.stripped_file_index().or_else(|| {
+                entry_reader.cpio_name().and_then(|name| {
+                    self.file_entries
+                        .iter()
+                        .position(|entry| cpio_path_matches(name, entry))
+                })
+            }) {
+                Some(index) => index,
+                None => {
+                    return Some(Err(Error::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "payload entry does not match an RPM file header",
+                    ))));
                 }
+            };
 
-                let mut content = Vec::new();
+            let mut content = Vec::new();
+            if let Err(e) = entry_reader.read_to_end(&mut content) {
+                return Some(Err(Error::Io(e)));
+            }
+            if let Err(e) = entry_reader.finish() {
+                return Some(Err(Error::Io(e)));
+            }
 
-                if let Err(e) = entry_reader.read_to_end(&mut content) {
-                    return Some(Err(Error::Io(e)));
-                }
-                if let Err(e) = entry_reader.finish() {
-                    return Some(Err(Error::Io(e)));
-                }
-
-                Some(Ok(RpmFile {
+            if payload_index == file_index {
+                return Some(Ok(RpmFile {
                     metadata: file_entry,
                     content,
-                }))
+                }));
             }
-            Err(e) => Some(Err(Error::Io(e))),
+            self.pending.insert(payload_index, content);
         }
     }
+}
+
+fn cpio_path_matches(name: &str, entry: &FileEntry<'_>) -> bool {
+    let cpio_path = name.strip_prefix("./").unwrap_or(name);
+    let entry_path = entry.path();
+    let entry_path = entry_path.to_string_lossy();
+    cpio_path == entry_path.strip_prefix('/').unwrap_or(&entry_path)
 }
 
 impl ExactSizeIterator for FileIterator<'_> {

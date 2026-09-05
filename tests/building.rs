@@ -932,6 +932,23 @@ mod hardlinks {
             .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILESIZES)?;
         assert_eq!(sizes, vec![0, 14, 14, 10]);
 
+        let files = package.files()?.collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(files.len(), 4);
+        let content = |path: &str| {
+            &files
+                .iter()
+                .find(|file| file.metadata.path() == Path::new(path))
+                .expect("file should be present")
+                .content
+        };
+        assert!(content("/opt/with-dir-hardlinks").is_empty());
+        assert_eq!(content("/opt/with-dir-hardlinks/alpha-1"), b"");
+        assert_eq!(
+            content("/opt/with-dir-hardlinks/alpha-2"),
+            b"shared content"
+        );
+        assert_eq!(content("/opt/with-dir-hardlinks/standalone"), b"standalone");
+
         Ok(())
     }
 

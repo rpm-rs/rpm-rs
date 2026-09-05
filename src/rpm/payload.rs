@@ -296,6 +296,22 @@ impl CpioEntry {
 }
 
 impl<R: Read> Reader<R> {
+    /// Return the file index encoded by a stripped CPIO entry.
+    pub(crate) fn stripped_file_index(&self) -> Option<usize> {
+        match &self.entry {
+            RpmPayloadEntry::Stripped(index) => Some(*index as usize),
+            RpmPayloadEntry::Cpio(_) => None,
+        }
+    }
+
+    /// Return the path encoded by a regular CPIO entry.
+    pub(crate) fn cpio_name(&self) -> Option<&str> {
+        match &self.entry {
+            RpmPayloadEntry::Cpio(entry) if !entry.is_trailer() => Some(&entry.name),
+            RpmPayloadEntry::Cpio(_) | RpmPayloadEntry::Stripped(_) => None,
+        }
+    }
+
     /// Parses metadata for the next entry in an archive, and returns a reader
     /// that will yield the entry data.
     pub fn new(mut inner: R, file_entries: &[FileEntry<'_>]) -> io::Result<Reader<R>> {
