@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.28.0
+
 ### Fixed
 
 - Explicit root-child entries such as `/usr` now use `/` as their RPM header dirname instead of `//`.
