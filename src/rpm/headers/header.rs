@@ -24,6 +24,50 @@ impl<T> Header<T>
 where
     T: Tag,
 {
+    /// Construct a header from raw tag numbers and values.
+    ///
+    /// The header region tag is generated automatically. This makes it possible
+    /// to rebuild headers containing tags that rpm-rs does not know about while
+    /// still producing a valid immutable-region record.
+    pub fn from_entries(entries: impl IntoIterator<Item = HeaderEntry>, region_tag: T) -> Self {
+        let entries = entries
+            .into_iter()
+            .map(|entry| IndexEntry::new_raw(entry.tag, entry.data))
+            .collect();
+        Self::from_index_entries(entries, region_tag)
+    }
+
+    pub(crate) fn from_index_entries(
+        mut actual_records: Vec<IndexEntry<T>>,
+        region_tag: T,
+    ) -> Self {
+        // Ensure the tags in the header we're creating will be in sorted order
+        actual_records.sort_by_key(|e| e.tag);
+
+        let mut store = Vec::new();
+        for record in &mut actual_records {
+            record.offset = store.len() as i32;
+            let alignment = record.data.append(&mut store);
+            record.offset += alignment as i32;
+        }
+
+        let region_tag =
+            Self::create_region_tag(region_tag, actual_records.len() as i32, store.len() as i32);
+        region_tag.data.append(&mut store);
+
+        let mut all_records = vec![region_tag];
+
+        all_records.append(&mut actual_records);
+        let store_size = store.len();
+
+        let index_header = IndexHeader::new(all_records.len() as u32, store_size as u32);
+        Header {
+            index_entries: all_records,
+            index_header,
+            store,
+        }
+    }
+
     pub(crate) fn parse(input: &mut impl io::BufRead) -> Result<Header<T>, Error> {
         let mut buf: [u8; INDEX_HEADER_SIZE as usize] = [0; INDEX_HEADER_SIZE as usize];
         input.read_exact(&mut buf)?;
@@ -468,34 +512,6 @@ where
         }
     }
 
-    pub(crate) fn from_entries(mut actual_records: Vec<IndexEntry<T>>, region_tag: T) -> Self {
-        // Ensure the tags in the header we're creating will be in sorted order
-        actual_records.sort_by_key(|e| e.tag);
-
-        let mut store = Vec::new();
-        for record in &mut actual_records {
-            record.offset = store.len() as i32;
-            let alignment = record.data.append(&mut store);
-            record.offset += alignment as i32;
-        }
-
-        let region_tag =
-            Self::create_region_tag(region_tag, actual_records.len() as i32, store.len() as i32);
-        region_tag.data.append(&mut store);
-
-        let mut all_records = vec![region_tag];
-
-        all_records.append(&mut actual_records);
-        let store_size = store.len();
-
-        let index_header = IndexHeader::new(all_records.len() as u32, store_size as u32);
-        Header {
-            index_entries: all_records,
-            index_header,
-            store,
-        }
-    }
-
     /// Size (in bytes) of this header in on-disk representation, not including padding
     pub(crate) fn size(&self) -> u32 {
         let index_size = self.index_header.num_entries * INDEX_ENTRY_SIZE;
@@ -934,6 +950,16 @@ impl<T: Tag> std::fmt::Debug for IndexEntry<T> {
 }
 
 impl<T: Tag> IndexEntry<T> {
+    fn new_raw(tag: u32, data: IndexData) -> Self {
+        Self {
+            tag,
+            offset: 0,
+            num_items: data.num_items(),
+            data,
+            entry_type: PhantomData,
+        }
+    }
+
     // 16 bytes
     pub(crate) fn parse(input: &[u8]) -> Result<(&[u8], Self), Error> {
         // first 4 bytes are the tag.
@@ -979,13 +1005,7 @@ impl<T: Tag> IndexEntry<T> {
     /// The `offset` field is initialized to 0 because it is computed later
     /// by `Header::from_entries` when the entry's data is appended to the store.
     pub(crate) fn new(tag: T, data: IndexData) -> IndexEntry<T> {
-        IndexEntry {
-            tag: tag.to_u32(),
-            offset: 0,
-            num_items: data.num_items(),
-            data,
-            entry_type: PhantomData,
-        }
+        Self::new_raw(tag.to_u32(), data)
     }
 }
 
@@ -1017,6 +1037,22 @@ pub enum IndexData {
     Bin(Vec<u8>),
     StringArray(Vec<String>),
     I18NString(Vec<String>),
+}
+
+/// A raw RPM header entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeaderEntry {
+    /// Numeric RPM tag identifier.
+    pub tag: u32,
+    /// Value and on-disk type of the tag.
+    pub data: IndexData,
+}
+
+impl HeaderEntry {
+    /// Construct a raw header entry.
+    pub fn new(tag: u32, data: IndexData) -> Self {
+        Self { tag, data }
+    }
 }
 
 impl fmt::Display for IndexData {
@@ -1225,7 +1261,7 @@ mod test {
         );
 
         // Create header with from_entries
-        let header = Header::from_entries(entries, IndexTag::RPMTAG_HEADERIMMUTABLE);
+        let header = Header::from_index_entries(entries, IndexTag::RPMTAG_HEADERIMMUTABLE);
 
         // Extract tags from the created header (skip the region tag at index 0)
         let tags_after: Vec<u32> = header.index_entries.iter().skip(1).map(|e| e.tag).collect();

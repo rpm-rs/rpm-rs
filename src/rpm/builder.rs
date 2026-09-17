@@ -2664,7 +2664,7 @@ impl PackageBuilder {
             ));
         }
 
-        let header = Header::from_entries(actual_records, IndexTag::RPMTAG_HEADERIMMUTABLE);
+        let header = Header::from_index_entries(actual_records, IndexTag::RPMTAG_HEADERIMMUTABLE);
 
         Ok((lead, header, payload))
     }

@@ -295,7 +295,7 @@ impl SignatureHeaderBuilder {
             ));
         }
 
-        let header = Header::<IndexSignatureTag>::from_entries(
+        let header = Header::<IndexSignatureTag>::from_index_entries(
             entries,
             IndexSignatureTag::HEADER_SIGNATURES,
         );
