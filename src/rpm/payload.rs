@@ -314,7 +314,16 @@ impl<R: Read> Reader<R> {
 
     /// Parses metadata for the next entry in an archive, and returns a reader
     /// that will yield the entry data.
-    pub fn new(mut inner: R, file_entries: &[FileEntry<'_>]) -> io::Result<Reader<R>> {
+    ///
+    /// Passing the payload_sizes argument is important for correctness (but it
+    /// is left optional to simplify tests). It provides explicit payload sizes
+    /// for stripped records to account for hardlinks being stored with no
+    /// contents despite the header showing the actual file size.
+    pub fn new(
+        mut inner: R,
+        file_entries: &[FileEntry<'_>],
+        payload_sizes: Option<&[u64]>,
+    ) -> io::Result<Reader<R>> {
         // char    c_magic[6];
         let mut magic = [0u8; 6];
         inner.read_exact(&mut magic)?;
@@ -423,9 +432,9 @@ impl<R: Read> Reader<R> {
             RpmPayloadEntry::Cpio(ref c) => c.file_size as u64,
             RpmPayloadEntry::Stripped(idx) => {
                 let idx = idx as usize;
-                file_entries
-                    .get(idx)
-                    .map(|e| e.size as u64)
+                payload_sizes
+                    .and_then(|sizes| sizes.get(idx).copied())
+                    .or_else(|| file_entries.get(idx).map(|e| e.size as u64))
                     .ok_or_else(|| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -785,12 +794,12 @@ mod cpio_tests {
 
         let output = trailer(output).unwrap();
 
-        let reader = Reader::new(output.as_slice(), &[]).unwrap();
+        let reader = Reader::new(output.as_slice(), &[], None).unwrap();
         assert_eq!(entry(&reader).name(), "./empty_dir");
         assert_eq!(entry(&reader).file_size(), 0);
         assert_eq!(entry(&reader).mode(), 0o040755);
         assert_eq!(entry(&reader).nlink(), 2);
-        let reader = Reader::new(reader.finish().unwrap(), &[]).unwrap();
+        let reader = Reader::new(reader.finish().unwrap(), &[], None).unwrap();
         assert!(reader.is_trailer());
     }
 
@@ -813,7 +822,7 @@ mod cpio_tests {
         copy(&mut input, &mut writer).unwrap();
         let output = trailer(writer.finish().unwrap()).unwrap();
 
-        let mut reader = Reader::new(output.as_slice(), &[]).unwrap();
+        let mut reader = Reader::new(output.as_slice(), &[], None).unwrap();
         assert_eq!(entry(&reader).name(), "./myfile");
         assert_eq!(entry(&reader).ino(), 42);
         assert_eq!(entry(&reader).mode(), 0o100755);
@@ -825,7 +834,7 @@ mod cpio_tests {
         let mut contents = vec![];
         copy(&mut reader, &mut contents).unwrap();
         assert_eq!(contents, data);
-        let reader = Reader::new(reader.finish().unwrap(), &[]).unwrap();
+        let reader = Reader::new(reader.finish().unwrap(), &[], None).unwrap();
         assert!(reader.is_trailer());
     }
 
@@ -875,7 +884,7 @@ mod cpio_tests {
         let output = trailer(output).unwrap();
 
         // Now read the archive back in and make sure we get the same data.
-        let mut reader = Reader::new(output.as_slice(), &[]).unwrap();
+        let mut reader = Reader::new(output.as_slice(), &[], None).unwrap();
         assert_eq!(entry(&reader).name(), "./hello_world");
         assert_eq!(entry(&reader).file_size(), length1);
         assert_eq!(entry(&reader).ino(), 1);
@@ -886,7 +895,7 @@ mod cpio_tests {
         copy(&mut reader, &mut contents).unwrap();
         assert_eq!(contents, data1);
 
-        let mut reader = Reader::new(reader.finish().unwrap(), &[]).unwrap();
+        let mut reader = Reader::new(reader.finish().unwrap(), &[], None).unwrap();
         assert_eq!(entry(&reader).name(), "./hello_world2");
         assert_eq!(entry(&reader).file_size(), length2);
         assert_eq!(entry(&reader).ino(), 2);
@@ -894,7 +903,7 @@ mod cpio_tests {
         copy(&mut reader, &mut contents).unwrap();
         assert_eq!(contents, data2);
 
-        let reader = Reader::new(reader.finish().unwrap(), &[]).unwrap();
+        let reader = Reader::new(reader.finish().unwrap(), &[], None).unwrap();
         assert!(reader.is_trailer());
     }
 
@@ -951,7 +960,7 @@ mod cpio_tests {
         let mut slice = out.as_slice();
         for (i, &size) in sizes.iter().enumerate() {
             let expected = vec![b'A' + i as u8; size];
-            let mut reader = Reader::new(slice, &[]).unwrap();
+            let mut reader = Reader::new(slice, &[], None).unwrap();
             assert_eq!(entry(&reader).name(), format!("./file{}", i));
             assert_eq!(entry(&reader).file_size(), size as u32);
             let mut contents = vec![];
@@ -959,7 +968,7 @@ mod cpio_tests {
             assert_eq!(contents, expected);
             slice = reader.finish().unwrap();
         }
-        let reader = Reader::new(slice, &[]).unwrap();
+        let reader = Reader::new(slice, &[], None).unwrap();
         assert!(reader.is_trailer());
     }
 }
@@ -996,12 +1005,12 @@ mod stripped_cpio_tests {
         let output = writer.finish().unwrap();
         let output = trailer(output).unwrap();
 
-        let reader = Reader::new(output.as_slice(), &file_entries).unwrap();
+        let reader = Reader::new(output.as_slice(), &file_entries, None).unwrap();
         match &reader.entry {
             RpmPayloadEntry::Stripped(idx) => assert_eq!(*idx, 0),
             _ => panic!("expected stripped entry"),
         }
-        let reader = Reader::new(reader.finish().unwrap(), &file_entries).unwrap();
+        let reader = Reader::new(reader.finish().unwrap(), &file_entries, None).unwrap();
         assert!(reader.is_trailer());
     }
 
@@ -1033,7 +1042,7 @@ mod stripped_cpio_tests {
         let output = trailer(output).unwrap();
 
         // Read them back
-        let mut reader = Reader::new(output.as_slice(), &file_entries).unwrap();
+        let mut reader = Reader::new(output.as_slice(), &file_entries, None).unwrap();
         match &reader.entry {
             RpmPayloadEntry::Stripped(idx) => assert_eq!(*idx, 0),
             _ => panic!("expected stripped entry"),
@@ -1042,7 +1051,7 @@ mod stripped_cpio_tests {
         copy(&mut reader, &mut contents).unwrap();
         assert_eq!(contents, data1);
 
-        let mut reader = Reader::new(reader.finish().unwrap(), &file_entries).unwrap();
+        let mut reader = Reader::new(reader.finish().unwrap(), &file_entries, None).unwrap();
         match &reader.entry {
             RpmPayloadEntry::Stripped(idx) => assert_eq!(*idx, 1),
             _ => panic!("expected stripped entry"),
@@ -1052,7 +1061,7 @@ mod stripped_cpio_tests {
         assert_eq!(contents, data2);
 
         // Verify the trailer is read correctly
-        let reader = Reader::new(reader.finish().unwrap(), &file_entries).unwrap();
+        let reader = Reader::new(reader.finish().unwrap(), &file_entries, None).unwrap();
         assert!(reader.is_trailer());
     }
 
@@ -1081,7 +1090,7 @@ mod stripped_cpio_tests {
         let mut slice = out.as_slice();
         for (i, &size) in sizes.iter().enumerate() {
             let expected = vec![b'A' + i as u8; size];
-            let mut reader = Reader::new(slice, &file_entries).unwrap();
+            let mut reader = Reader::new(slice, &file_entries, None).unwrap();
             match &reader.entry {
                 RpmPayloadEntry::Stripped(idx) => assert_eq!(*idx, i as u32),
                 _ => panic!("expected stripped entry"),
@@ -1091,7 +1100,7 @@ mod stripped_cpio_tests {
             assert_eq!(contents, expected);
             slice = reader.finish().unwrap();
         }
-        let reader = Reader::new(slice, &file_entries).unwrap();
+        let reader = Reader::new(slice, &file_entries, None).unwrap();
         assert!(reader.is_trailer());
     }
 
@@ -1107,7 +1116,7 @@ mod stripped_cpio_tests {
         copy(&mut Cursor::new(data), &mut writer).unwrap();
         let output = writer.finish().unwrap();
 
-        match Reader::new(output.as_slice(), &file_entries) {
+        match Reader::new(output.as_slice(), &file_entries, None) {
             Err(err) => assert_eq!(err.kind(), io::ErrorKind::InvalidData),
             Ok(_) => panic!("expected error for out-of-range file index"),
         }
