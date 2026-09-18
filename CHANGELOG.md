@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `PackageMetadata::iter_changelog_entries()` for iterating over changelog entries without collecting them into a list.
 
+### Fixed
+
+- RPM hardlink payloads with stripped CPIO records are now read and extracted correctly.
+
 ## 0.28.0
 
 ### Fixed
@@ -23,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Support for automatic hardlink detection.
 - `FileOptionsBuilder::hardlink()` for declaring hardlink sets explicitly (confined to the package).
-- The optional `signature-sequoia` feature provides OpenPGP signing and verification through Sequoia 2.3's pure-Rust crypto backend. Signature backends are mutually exclusive: select Sequoia with `--no-default-features --features signature-sequoia`. The default remains `signature-pgp`, including its draft-PQC support.
+- The optional `signature-sequoia` feature provides OpenPGP signing and verification through Sequoia 2.3's pure-Rust crypto backend. Signature backends are mutually exclusive: select Sequoia with `--no-default-features --features signature-sequoia`. The default remains `signature-pgp`.
 
 ## 0.27.1
 
