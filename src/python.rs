@@ -975,8 +975,8 @@ impl PyPackageMetadata {
     /// List of changelog entries, most recent first.
     fn changelog_entries(&self) -> PyResult<Vec<PyChangelogEntry>> {
         self.0
-            .get_changelog_entries()
-            .map(|v| v.into_iter().map(PyChangelogEntry).collect())
+            .iter_changelog_entries()
+            .map(|entries| entries.map(PyChangelogEntry).collect())
             .map_err(to_pyerr)
     }
 
