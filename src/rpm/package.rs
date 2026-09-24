@@ -1622,8 +1622,10 @@ impl PackageMetadata {
         Ok(())
     }
 
-    /// Return a list of changelog entries
-    pub fn get_changelog_entries(&self) -> Result<Vec<ChangelogEntry>, Error> {
+    /// Return an iterator over the changelog entries.
+    pub fn iter_changelog_entries(
+        &self,
+    ) -> Result<impl Iterator<Item = ChangelogEntry> + '_, Error> {
         let names = self
             .header
             .get_entry_data_as_string_array(IndexTag::RPMTAG_CHANGELOGNAME);
@@ -1633,25 +1635,27 @@ impl PackageMetadata {
         let descriptions = self
             .header
             .get_entry_data_as_string_array(IndexTag::RPMTAG_CHANGELOGTEXT);
+        let make_entry = |(name, timestamp, description): (&str, u32, &str)| ChangelogEntry {
+            name: name.to_owned(),
+            timestamp: timestamp as u64,
+            description: description.to_owned(),
+        };
 
-        if matches!(&names, Err(Error::TagNotFound(_)))
+        let (names, timestamps, descriptions) = if matches!(&names, Err(Error::TagNotFound(_)))
             && matches!(&timestamps, Err(Error::TagNotFound(_)))
             && matches!(&descriptions, Err(Error::TagNotFound(_)))
         {
-            return Ok(Vec::new());
-        }
+            (Vec::new(), Vec::new(), Vec::new())
+        } else {
+            (names?, timestamps?, descriptions?)
+        };
 
-        let names = names?;
-        let timestamps = timestamps?;
-        let descriptions = descriptions?;
+        Ok(itertools::multizip((names, timestamps, descriptions)).map(make_entry))
+    }
 
-        Ok(itertools::multizip((names, timestamps, descriptions))
-            .map(|(name, timestamp, description)| ChangelogEntry {
-                name: name.to_owned(),
-                timestamp: timestamp as u64,
-                description: description.to_owned(),
-            })
-            .collect())
+    /// Return a list of changelog entries.
+    pub fn get_changelog_entries(&self) -> Result<Vec<ChangelogEntry>, Error> {
+        Ok(self.iter_changelog_entries()?.collect())
     }
 
     /// Return the raw bytes of each signature in the package's signature header.
