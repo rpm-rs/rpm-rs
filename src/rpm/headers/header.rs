@@ -950,7 +950,7 @@ impl<T: Tag> std::fmt::Debug for IndexEntry<T> {
 }
 
 impl<T: Tag> IndexEntry<T> {
-    fn new_raw(tag: u32, data: IndexData) -> Self {
+    pub(crate) fn new_raw(tag: u32, data: IndexData) -> Self {
         Self {
             tag,
             offset: 0,

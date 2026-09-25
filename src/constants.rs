@@ -523,28 +523,31 @@ pub fn format_tag_id(tag: u32) -> String {
     }
 }
 
-/// Return the canonical textual name used for an RPM tag.
-pub fn tag_name(tag: u32) -> String {
-    if let Some(tag) = IndexTag::from_u32(tag) {
-        tag.to_string()
-    } else if let Some(tag) = IndexSignatureTag::from_u32(tag) {
-        tag.to_string()
-    } else {
-        format!("#{tag}")
-    }
+/// Return a main-header tag's name, or a numeric name for an unknown tag.
+pub fn main_tag_name(tag: u32) -> String {
+    IndexTag::from_u32(tag).map_or_else(|| format!("#{tag}"), |known| known.to_string())
 }
 
-/// Parse a canonical RPM tag name or a numeric `#<tag>` name.
-pub fn parse_tag_name(name: &str) -> Option<u32> {
+/// Return a signature-header tag's name, or a numeric name for an unknown tag.
+pub fn signature_tag_name(tag: u32) -> String {
+    IndexSignatureTag::from_u32(tag).map_or_else(|| format!("#{tag}"), |known| known.to_string())
+}
+
+/// Parse a main-header tag name or a numeric `#<tag>` name.
+pub fn parse_main_tag_name(name: &str) -> Option<u32> {
     if let Some(number) = name.strip_prefix('#') {
         return number.parse().ok();
     }
-    // The regular tag space extends well beyond the signature tag range.
-    // Iterating the compact enum space keeps this helper dependency-free while
-    // still covering the tags defined by current RPM headers.
+    (0..=6000).find(|&number| IndexTag::from_u32(number).is_some_and(|tag| tag.to_string() == name))
+}
+
+/// Parse a signature-header tag name or a numeric `#<tag>` name.
+pub fn parse_signature_tag_name(name: &str) -> Option<u32> {
+    if let Some(number) = name.strip_prefix('#') {
+        return number.parse().ok();
+    }
     (0..=6000).find(|&number| {
-        IndexTag::from_u32(number).is_some_and(|tag| tag.to_string() == name)
-            || IndexSignatureTag::from_u32(number).is_some_and(|tag| tag.to_string() == name)
+        IndexSignatureTag::from_u32(number).is_some_and(|tag| tag.to_string() == name)
     })
 }
 

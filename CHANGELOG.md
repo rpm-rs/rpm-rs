@@ -13,12 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `PackageMetadata::iter_changelog_entries()` for iterating over changelog entries without collecting them into a list.
 - `Lead` construction and accessors for RPM reconstruction tools.
-- Reusable payload construction metadata and file modification-time overrides for package tools.
+- `PayloadBuilder` and `HeaderEditor` let package tools rebuild payloads while preserving editable and unknown header tags; file modification times can be overridden.
 - `RpmFile::has_payload()` identifies entries whose content is present in the payload.
 - `StreamingRpmFile::has_payload()` identifies entries whose content is present while streaming.
 
 ### Breaking Changes
 
+- `PayloadBuildResult` now exposes ordered file and digest results instead of duplicated header/tag fields.
 - `RpmFile::content` is moved to a function `RpmFile::content()`, and now returns optional payload bytes; entries without payload content return `None` in Rust and Python.
 
 ### Fixed

@@ -19,7 +19,7 @@ use std::fmt::Debug;
 use super::Lead;
 use super::headers::*;
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum RpmFormat {
     V4,
     V6,
@@ -306,20 +306,6 @@ impl Package {
             },
             payload,
         })
-    }
-
-    /// Replace the main header and refresh the unsigned signature metadata.
-    #[cfg(feature = "payload")]
-    pub fn replace_header(&mut self, header: Header<IndexTag>) -> Result<(), Error> {
-        self.metadata.header = header;
-        let header_bytes = self.header_bytes()?;
-        let content_length = header_bytes.len() as u64 + self.payload.len() as u64;
-        self.metadata.signature = SignatureHeaderBuilder::from_existing(&self.metadata.signature)?
-            .clear_signatures()
-            .set_content_length(content_length)
-            .calculate_digests(&header_bytes)
-            .build()?;
-        Ok(())
     }
 
     /// Open and parse a file at the provided path as an RPM package

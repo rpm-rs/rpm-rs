@@ -31,6 +31,16 @@ required-features = ["payload"]
 path = "tests/building.rs"
 
 [[test]]
+name = "tarpm_api"
+required-features = ["payload"]
+path = "tests/tarpm_api.rs"
+
+[[example]]
+name = "tarpm"
+required-features = ["payload"]
+path = "examples/tarpm.rs"
+
+[[test]]
 name = "compare"
 required-features = ["payload"]
 path = "tests/compare.rs"

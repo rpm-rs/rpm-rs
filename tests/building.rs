@@ -1212,3 +1212,132 @@ mod hardlinks {
         );
     }
 }
+
+mod rebuild_api {
+    use super::*;
+    use sha2::Digest;
+
+    #[test]
+    fn standalone_payload_matches_ordinary_builder_in_both_formats() -> Result<(), Error> {
+        for format in [RpmFormat::V4, RpmFormat::V6] {
+            let config = BuildConfig::from(format)
+                .compression(CompressionType::None)
+                .source_date(42);
+            let mut standalone = PayloadBuilder::new();
+            standalone.using_config(config);
+            standalone.with_file_contents(b"bytes".to_vec(), FileOptions::new("/file"))?;
+            let payload = standalone.build()?;
+
+            let mut ordinary = PackageBuilder::new("same", "1", "MIT", "noarch", "same");
+            ordinary.using_config(config);
+            ordinary.with_file_contents(b"bytes".to_vec(), FileOptions::new("/file"))?;
+            let package = ordinary.build()?;
+
+            assert_eq!(payload.compressed_payload, package.payload);
+            for entry in payload.derived_header_entries() {
+                assert_eq!(package.metadata.header.entry(entry.tag)?, entry.data);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn standalone_payload_reports_hardlink_carrier_and_ghost() -> Result<(), Error> {
+        let mut builder = PayloadBuilder::new();
+        builder.using_config(
+            BuildConfig::v6()
+                .compression(CompressionType::None)
+                .file_digest_algorithm(DigestAlgorithm::Sha2_512),
+        );
+        builder.with_file_contents(
+            b"shared".to_vec(),
+            FileOptions::new("/a")
+                .hardlink("set")
+                .modified_at(Timestamp(12)),
+        )?;
+        builder.with_file_contents(
+            b"shared".to_vec(),
+            FileOptions::new("/b")
+                .hardlink("set")
+                .modified_at(Timestamp(12)),
+        )?;
+        builder.with_ghost(FileOptions::ghost("/ghost"))?;
+        builder.with_symlink(FileOptions::symlink("/link", "/a"))?;
+        let payload = builder.build()?;
+
+        assert_eq!(payload.files[0].size, 6);
+        assert_eq!(payload.files[0].payload_size, 0);
+        assert_eq!(payload.files[1].payload_size, 6);
+        assert_eq!(payload.files[0].modified_at, Timestamp(12));
+        assert_eq!(
+            payload.files[0].digest,
+            hex::encode(sha2::Sha512::digest(b"shared"))
+        );
+        assert_eq!(payload.files[2].payload_size, 0);
+        assert_eq!(
+            payload.hardlinks(),
+            vec![vec!["/a".to_string(), "/b".to_string()]]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn standalone_payload_rejects_unsupported_digest_and_bad_metadata() {
+        let mut digest_builder = PayloadBuilder::new();
+        digest_builder.using_config(BuildConfig::v4().file_digest_algorithm(DigestAlgorithm::Md5));
+        digest_builder
+            .with_file_contents(b"bytes".to_vec(), FileOptions::new("/file"))
+            .unwrap();
+        assert!(matches!(
+            digest_builder.build(),
+            Err(Error::InvalidFileOptions { .. })
+        ));
+
+        let mut metadata_builder = PayloadBuilder::new();
+        metadata_builder
+            .with_file_contents(
+                b"bytes".to_vec(),
+                FileOptions::new("/file").user("bad\0user"),
+            )
+            .unwrap();
+        assert!(matches!(
+            metadata_builder.build(),
+            Err(Error::InvalidControlChar { .. })
+        ));
+    }
+
+    #[test]
+    fn header_editor_refreshes_derived_tags_and_keeps_unknown_values() -> Result<(), Error> {
+        let mut builder = PayloadBuilder::new();
+        builder.using_config(BuildConfig::v4().compression(CompressionType::None));
+        builder.with_file_contents(b"new".to_vec(), FileOptions::new("/file"))?;
+        let payload = builder.build()?;
+        let mut editor = HeaderEditor::new(IndexTag::RPMTAG_HEADERIMMUTABLE);
+        editor.upsert(65000, IndexData::Bin(vec![0, 255]));
+        editor.upsert(
+            IndexTag::RPMTAG_PAYLOADCOMPRESSOR as u32,
+            IndexData::StringTag("gzip".into()),
+        );
+        editor.upsert(
+            IndexTag::RPMTAG_FILELANGS as u32,
+            IndexData::StringArray(vec!["fr".into()]),
+        );
+        payload.replace_derived_entries(&mut editor);
+        let header = editor.build();
+        assert_eq!(header.entry(65000u32)?, IndexData::Bin(vec![0, 255]));
+        assert_eq!(
+            header.entry(IndexTag::RPMTAG_FILELANGS)?,
+            IndexData::StringArray(vec!["fr".into()])
+        );
+        assert!(!header.entry_is_present(IndexTag::RPMTAG_PAYLOADCOMPRESSOR));
+        assert_eq!(
+            header
+                .get_all_entries()?
+                .iter()
+                .filter(|(tag, _)| *tag == rpm::constants::HEADER_IMMUTABLE)
+                .count(),
+            1
+        );
+        Ok(())
+    }
+}
