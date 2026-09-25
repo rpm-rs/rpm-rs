@@ -167,10 +167,14 @@ impl Plan {
         Ok(())
     }
 
+    /// Return the planned hardlink metadata for a package path, if it belongs
+    /// to a hardlink set.
     pub(super) fn member(&self, path: &str) -> Option<Member> {
         self.members.get(path).copied()
     }
 
+    /// Return payload paths in RPM order: ordinary files first, followed by
+    /// hardlink members in header order.
     pub(super) fn payload_order(&self, files: &BTreeMap<String, PackageFileEntry>) -> Vec<String> {
         // Match rpmbuild: ordinary payload entries come first, followed by all hardlink
         // members. Each partition retains the package's sorted header order.
@@ -188,6 +192,8 @@ impl Plan {
             .collect()
     }
 
+    /// Calculate installed size without counting shared hardlink contents more
+    /// than once.
     pub(super) fn installed_size(
         &self,
         files: &BTreeMap<String, PackageFileEntry>,
@@ -205,6 +211,7 @@ impl Plan {
     }
 }
 
+/// Validate that all members of a hardlink group can share one filesystem inode.
 fn validate_group(entries: &[(&str, &PackageFileEntry)]) -> Result<(), Error> {
     if entries.len() < 2 {
         return Err(Error::InvalidFileOptions {
@@ -245,6 +252,7 @@ fn validate_group(entries: &[(&str, &PackageFileEntry)]) -> Result<(), Error> {
     Ok(())
 }
 
+/// Calculate a streaming SHA-256 digest for a package file source.
 fn content_digest(entry: &PackageFileEntry) -> Result<[u8; 32], Error> {
     let mut reader = entry.source.try_into_bufread()?;
     let mut hasher = Sha256::new();

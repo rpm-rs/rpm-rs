@@ -1,6 +1,11 @@
 //! Access and extract RPM package payload contents (files, directories, symlinks).
 
-use std::{fs, io, io::Read, path::Path};
+use std::{
+    collections::HashMap,
+    fs, io,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -11,10 +16,130 @@ use super::headers::*;
 use super::package::{Package, PackageMetadata};
 use super::payload;
 
-#[cfg(unix)]
-fn symlink(original: impl AsRef<Path>, link: impl AsRef<Path>) -> Result<(), Error> {
-    std::os::unix::fs::symlink(original, link)?;
-    Ok(())
+/// The RPM identity shared by members of one hardlink set.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct HardlinkIdentity {
+    device: u32,
+    inode: u32,
+}
+
+/// Header and payload information derived from one package's file metadata.
+struct PayloadLayout<'a> {
+    file_entries: Vec<FileEntry<'a>>,
+    ghosts: Vec<usize>,
+    identities: Vec<Option<HardlinkIdentity>>,
+    payload_sizes: Vec<u64>,
+    payload_presence: Vec<bool>,
+    hardlink_content_indices: HashMap<HardlinkIdentity, usize>,
+}
+
+impl<'a> PayloadLayout<'a> {
+    /// Build the file layout used to interpret payload records.
+    fn new(metadata: &PackageMetadata, file_entries: Vec<FileEntry<'a>>) -> Self {
+        let devices = metadata
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEDEVICES)
+            .unwrap_or_default();
+        let inodes = metadata
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEINODES)
+            .unwrap_or_default();
+        let identities = file_entries
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                devices
+                    .get(index)
+                    .copied()
+                    .zip(inodes.get(index).copied())
+                    .map(|(device, inode)| HardlinkIdentity { device, inode })
+            })
+            .collect::<Vec<_>>();
+
+        Self::from_identities(file_entries, identities)
+    }
+
+    /// Build a file layout from identities already aligned with the file entries.
+    fn from_identities(
+        file_entries: Vec<FileEntry<'a>>,
+        identities: Vec<Option<HardlinkIdentity>>,
+    ) -> Self {
+        let ghosts = file_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| entry.flags.contains(FileFlags::GHOST).then_some(index))
+            .collect();
+
+        let mut payload_sizes = file_entries
+            .iter()
+            .map(|entry| entry.size() as u64)
+            .collect::<Vec<_>>();
+        let mut payload_presence = vec![true; file_entries.len()];
+        for &index in &ghosts {
+            payload_presence[index] = false;
+        }
+        let mut hardlink_content_indices = HashMap::new();
+        for (identity, indexes) in hardlink_groups(&file_entries, &identities) {
+            let content_index = *indexes.last().expect("hardlink group is not empty");
+            hardlink_content_indices.insert(identity, content_index);
+            for index in indexes {
+                if index != content_index {
+                    payload_sizes[index] = 0;
+                    payload_presence[index] = false;
+                }
+            }
+        }
+
+        Self {
+            file_entries,
+            ghosts,
+            identities,
+            payload_sizes,
+            payload_presence,
+            hardlink_content_indices,
+        }
+    }
+
+    /// Map each package path to its RPM hardlink identity.
+    fn identities_by_path(&self) -> HashMap<PathBuf, HardlinkIdentity> {
+        self.file_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                self.identities
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .map(|identity| (entry.path(), identity))
+            })
+            .collect()
+    }
+
+    /// Map each hardlink identity to the package path carrying its contents.
+    fn hardlink_target_paths(&self) -> HashMap<HardlinkIdentity, PathBuf> {
+        self.hardlink_content_indices
+            .iter()
+            .map(|(identity, &index)| (*identity, self.file_entries[index].path()))
+            .collect()
+    }
+}
+
+/// Group regular, non-ghost entries that share an RPM device and inode.
+fn hardlink_groups(
+    file_entries: &[FileEntry<'_>],
+    identities: &[Option<HardlinkIdentity>],
+) -> HashMap<HardlinkIdentity, Vec<usize>> {
+    let mut groups = HashMap::new();
+    for (index, entry) in file_entries.iter().enumerate() {
+        if entry.file_type() == FileType::Regular
+            && !entry.flags().contains(FileFlags::GHOST)
+            && let Some(identity) = identities.get(index).copied().flatten()
+        {
+            groups.entry(identity).or_insert_with(Vec::new).push(index);
+        }
+    }
+    groups.retain(|_, indexes| indexes.len() > 1);
+    groups
 }
 
 #[cfg(windows)]
@@ -38,6 +163,12 @@ fn symlink(original: impl AsRef<Path>, link: impl AsRef<Path>) -> Result<(), Err
     Ok(())
 }
 
+#[cfg(unix)]
+fn symlink(original: impl AsRef<Path>, link: impl AsRef<Path>) -> Result<(), Error> {
+    std::os::unix::fs::symlink(original, link)?;
+    Ok(())
+}
+
 #[cfg(not(any(unix, windows)))]
 fn symlink(_original: &Path, _link: &Path) -> Result<(), Error> {
     Err(Error::UnsupportedSymlink)
@@ -57,30 +188,17 @@ impl Package {
     /// let package = rpm::Package::open("tests/assets/RPMS/v4/rpm-basic-2.3.4-5.el9.noarch.rpm")?;
     /// for entry in package.files()? {
     ///     let file = entry?;
-    ///     // do something with file.content
-    ///     println!("{} is {} bytes", file.metadata.path().display(), file.content.len());
+    ///     if let Some(content) = file.content() {
+    ///         println!("{} is {} bytes", file.metadata.path().display(), content.len());
+    ///     }
     /// }
     /// # Ok(()) }
     /// ```
     pub fn files(&self) -> Result<FileIterator<'_>, Error> {
-        let file_entries = self.metadata.get_file_entries()?;
-        let ghosts = file_entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| entry.flags.contains(FileFlags::GHOST).then_some(index))
-            .collect();
-        let file_count = file_entries.len();
+        let layout = PayloadLayout::new(&self.metadata, self.metadata.get_file_entries()?);
         let archive = decompress_stream(io::Cursor::new(&self.payload))?;
 
-        Ok(FileIterator {
-            file_entries,
-            archive,
-            count: 0,
-            payload_done: false,
-            ghosts,
-            ghost_index: 0,
-            seen: vec![false; file_count],
-        })
+        Ok(FileIterator::new(archive, layout))
     }
 
     /// Extract all contents of the package payload to a given directory.
@@ -122,18 +240,22 @@ impl Package {
             fs::create_dir_all(&dir_path)?;
         }
 
-        let mut archive = decompress_stream(io::Cursor::new(&self.payload))?;
-        let file_entries = self.metadata.get_file_entries()?;
+        let layout = PayloadLayout::new(&self.metadata, self.metadata.get_file_entries()?);
+        let identity_by_path = layout.identities_by_path();
+        let hardlink_target_paths = layout.hardlink_target_paths();
+        let mut deferred_hardlinks = Vec::new();
 
-        for file_entry in file_entries.iter() {
-            // Ghost files are not present in the payload archive and should not be created
+        let archive = decompress_stream(io::Cursor::new(&self.payload))?;
+        let mut files = FileIterator::new(archive, layout);
+
+        // Iterate in payload order. This is important for hardlink sets because
+        // RPM header order and CPIO payload order need not be identical.
+        for file in &mut files {
+            let file = file?;
+            let file_entry = &file.metadata;
+            // Ghost files are not present in the payload archive and should not be created.
             if file_entry.flags.contains(FileFlags::GHOST) {
                 continue;
-            }
-
-            let mut entry_reader = payload::Reader::new(&mut archive, &file_entries)?;
-            if entry_reader.is_trailer() {
-                return Ok(());
             }
             let entry_path = file_entry.path();
             let file_path = dest
@@ -149,12 +271,46 @@ impl Package {
                     }
                 }
                 FileType::Regular => {
-                    let mut f = fs::File::create(&file_path)?;
-                    io::copy(&mut entry_reader, &mut f)?;
-                    #[cfg(unix)]
-                    {
-                        let perms = fs::Permissions::from_mode(file_entry.permissions().into());
-                        f.set_permissions(perms)?;
+                    let identity = identity_by_path.get(&entry_path).copied();
+                    let hardlink_target = identity.and_then(|identity| {
+                        hardlink_target_paths.get(&identity).map(|target| {
+                            dest.as_ref()
+                                .join(target.strip_prefix("/").unwrap_or(dest.as_ref()))
+                        })
+                    });
+                    if let Some(target) = hardlink_target {
+                        if target == file_path {
+                            let mut f = fs::File::create(&file_path)?;
+                            let content = file.content.as_deref().ok_or_else(|| {
+                                Error::Io(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "hardlink target has no payload content",
+                                ))
+                            })?;
+                            f.write_all(content)?;
+                            #[cfg(unix)]
+                            {
+                                let perms =
+                                    fs::Permissions::from_mode(file_entry.permissions().into());
+                                f.set_permissions(perms)?;
+                            }
+                        } else {
+                            deferred_hardlinks.push((target, file_path));
+                        }
+                    } else {
+                        let mut f = fs::File::create(&file_path)?;
+                        let content = file.content.as_deref().ok_or_else(|| {
+                            Error::Io(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "regular file has no payload content",
+                            ))
+                        })?;
+                        f.write_all(content)?;
+                        #[cfg(unix)]
+                        {
+                            let perms = fs::Permissions::from_mode(file_entry.permissions().into());
+                            f.set_permissions(perms)?;
+                        }
                     }
                 }
                 FileType::SymbolicLink => {
@@ -167,7 +323,10 @@ impl Package {
                 // Skip file types we don't handle (e.g. device nodes, FIFOs, sockets)
                 _ => {}
             }
-            entry_reader.finish()?;
+        }
+
+        for (target, link) in deferred_hardlinks {
+            fs::hard_link(target, link)?;
         }
 
         Ok(())
@@ -177,6 +336,8 @@ impl Package {
 pub struct FileIterator<'a> {
     file_entries: Vec<FileEntry<'a>>,
     archive: Box<dyn io::Read + 'a>,
+    payload_sizes: Vec<u64>,
+    payload_presence: Vec<bool>,
     /// Number of entries yielded, including ghosts emitted after the payload.
     count: usize,
     /// Set after the CPIO trailer has been consumed; subsequent entries are ghosts.
@@ -192,10 +353,52 @@ pub struct FileIterator<'a> {
 #[derive(Debug)]
 pub struct RpmFile<'a> {
     pub metadata: FileEntry<'a>,
-    pub content: Vec<u8>,
+    /// Content from the payload, or `None` when the entry has no payload data.
+    content: Option<Vec<u8>>,
+}
+
+impl<'a> FileIterator<'a> {
+    /// Create a file iterator from a prepared payload layout and archive.
+    fn new(archive: Box<dyn io::Read + 'a>, layout: PayloadLayout<'a>) -> Self {
+        let file_count = layout.file_entries.len();
+
+        Self {
+            file_entries: layout.file_entries,
+            archive,
+            payload_sizes: layout.payload_sizes,
+            payload_presence: layout.payload_presence,
+            count: 0,
+            payload_done: false,
+            ghosts: layout.ghosts,
+            ghost_index: 0,
+            seen: vec![false; file_count],
+        }
+    }
 }
 
 impl<'a> RpmFile<'a> {
+    /// Returns whether this entry's content is represented in the payload.
+    pub fn has_payload(&self) -> bool {
+        self.content.is_some()
+    }
+
+    /// Returns the payload content, or `None` when this entry has no payload data.
+    pub fn content(&self) -> Option<&[u8]> {
+        self.content.as_deref()
+    }
+
+    /// Consumes the file and returns its payload content, if present.
+    pub fn into_content(self) -> Option<Vec<u8>> {
+        self.content
+    }
+
+    /// Constructs a file from metadata and optional payload content.
+    #[cfg(feature = "python")]
+    pub(crate) fn from_parts(metadata: FileEntry<'a>, content: Option<Vec<u8>>) -> Self {
+        Self { metadata, content }
+    }
+
+    /// Convert this file and its metadata to an owned value.
     pub fn into_owned(self) -> RpmFile<'static> {
         RpmFile {
             metadata: self.metadata.into_owned(),
@@ -214,7 +417,11 @@ impl<'a> Iterator for FileIterator<'a> {
 
         loop {
             if !self.payload_done {
-                let reader = payload::Reader::new(&mut self.archive, &self.file_entries);
+                let reader = payload::Reader::new(
+                    &mut self.archive,
+                    &self.file_entries,
+                    Some(&self.payload_sizes),
+                );
 
                 let mut entry_reader = match reader {
                     Ok(reader) => reader,
@@ -271,6 +478,11 @@ impl<'a> Iterator for FileIterator<'a> {
                 if let Err(e) = entry_reader.finish() {
                     return Some(Err(Error::Io(e)));
                 }
+                let content = if self.payload_presence[payload_index] {
+                    Some(content)
+                } else {
+                    None
+                };
 
                 self.seen[payload_index] = true;
                 self.count += 1;
@@ -288,7 +500,7 @@ impl<'a> Iterator for FileIterator<'a> {
             ) {
                 return Some(Ok(RpmFile {
                     metadata: self.file_entries[file_index].clone(),
-                    content: Vec::new(),
+                    content: None,
                 }));
             }
             return None;
@@ -379,6 +591,8 @@ pub struct PackageReader {
     pub metadata: PackageMetadata,
     file_entries: Vec<FileEntry<'static>>,
     archive: Box<dyn Read>,
+    payload_sizes: Vec<u64>,
+    payload_presence: Vec<bool>,
     /// Number of entries yielded, including ghosts emitted after the payload.
     count: usize,
     /// Set after the CPIO trailer has been consumed; subsequent entries are ghosts.
@@ -414,17 +628,22 @@ impl PackageReader {
             .into_iter()
             .map(|e| e.into_owned())
             .collect();
-        let ghosts = file_entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| entry.flags.contains(FileFlags::GHOST).then_some(index))
-            .collect();
+        let layout = PayloadLayout::new(&metadata, file_entries);
+        let PayloadLayout {
+            file_entries,
+            ghosts,
+            payload_sizes,
+            payload_presence,
+            ..
+        } = layout;
         let file_count = file_entries.len();
         let archive = decompress_stream(input)?;
         Ok(PackageReader {
             metadata,
             file_entries,
             archive,
+            payload_sizes,
+            payload_presence,
             count: 0,
             payload_done: false,
             ghosts,
@@ -443,8 +662,12 @@ impl PackageReader {
     /// calling `next_file` again.
     pub fn next_file(&mut self) -> Result<Option<StreamingRpmFile<'_>>, Error> {
         if !self.payload_done {
-            let reader =
-                payload::Reader::new(&mut self.archive, &self.file_entries).map_err(Error::Io)?;
+            let reader = payload::Reader::new(
+                &mut self.archive,
+                &self.file_entries,
+                Some(&self.payload_sizes),
+            )
+            .map_err(Error::Io)?;
             if !reader.is_trailer() {
                 let file_index = reader
                     .stripped_file_index()
@@ -467,12 +690,14 @@ impl PackageReader {
                         "payload contains a duplicate RPM file entry",
                     )));
                 }
+                let payload_present = self.payload_presence[file_index];
                 self.seen[file_index] = true;
                 self.count += 1;
 
                 return Ok(Some(StreamingRpmFile {
                     metadata: self.file_entries[file_index].clone(),
                     reader: Some(reader),
+                    payload_present,
                 }));
             }
             self.payload_done = true;
@@ -487,6 +712,7 @@ impl PackageReader {
             return Ok(Some(StreamingRpmFile {
                 metadata: self.file_entries[file_index].clone(),
                 reader: None,
+                payload_present: false,
             }));
         }
         Ok(None)
@@ -502,12 +728,18 @@ impl PackageReader {
 pub struct StreamingRpmFile<'a> {
     /// Metadata for this file (path, permissions, timestamps, digest, …).
     pub metadata: FileEntry<'static>,
+    payload_present: bool,
     // None for ghost files and after finish() is called.
     reader: Option<payload::Reader<&'a mut Box<dyn Read>>>,
 }
 
 #[cfg(feature = "payload")]
 impl StreamingRpmFile<'_> {
+    /// Returns whether this entry's content is represented in the payload.
+    pub fn has_payload(&self) -> bool {
+        self.payload_present
+    }
+
     /// Drain any unread bytes and return any IO error encountered.
     ///
     /// This is optional — [`Drop`] drains automatically — but calling `finish`
@@ -545,6 +777,77 @@ impl Drop for StreamingRpmFile<'_> {
     }
 }
 
+#[cfg(test)]
+mod test_payload_layout {
+    use super::*;
+    use crate::Timestamp;
+    use std::borrow::Cow;
+
+    fn regular_entry(name: &'static str, size: usize, flags: FileFlags) -> FileEntry<'static> {
+        FileEntry {
+            dirname: Cow::Borrowed("/"),
+            basename: Cow::Borrowed(name),
+            mode: FileMode::regular(0o644),
+            user: Cow::Borrowed("root"),
+            group: Cow::Borrowed("root"),
+            modified_at: Timestamp(0),
+            size,
+            flags,
+            digest: None,
+            caps: None,
+            linkto: None,
+            ima_signature: None,
+        }
+    }
+
+    #[test]
+    fn groups_by_device_and_inode_and_sizes_stripped_members() {
+        let entries = vec![
+            regular_entry("alpha-1", 23, FileFlags::empty()),
+            regular_entry("beta", 11, FileFlags::empty()),
+            regular_entry("alpha-2", 23, FileFlags::empty()),
+        ];
+        let identity = |device, inode| Some(HardlinkIdentity { device, inode });
+        let alpha = HardlinkIdentity {
+            device: 1,
+            inode: 7,
+        };
+        let layout = PayloadLayout::from_identities(
+            entries,
+            vec![identity(1, 7), identity(2, 7), identity(1, 7)],
+        );
+
+        assert_eq!(layout.payload_sizes, vec![0, 11, 23]);
+        assert_eq!(layout.hardlink_content_indices.get(&alpha), Some(&2));
+        assert_eq!(
+            layout.hardlink_target_paths().get(&alpha),
+            Some(&PathBuf::from("/alpha-2"))
+        );
+    }
+
+    #[test]
+    fn ghosts_and_incomplete_identities_are_not_hardlink_members() {
+        let entries = vec![
+            regular_entry("ghost", 17, FileFlags::GHOST),
+            regular_entry("real-1", 19, FileFlags::empty()),
+            regular_entry("real-2", 19, FileFlags::empty()),
+            regular_entry("unmatched", 13, FileFlags::empty()),
+        ];
+        let identity = HardlinkIdentity {
+            device: 3,
+            inode: 9,
+        };
+        let layout = PayloadLayout::from_identities(
+            entries,
+            vec![Some(identity), Some(identity), Some(identity), None],
+        );
+
+        assert_eq!(layout.ghosts, vec![0]);
+        assert_eq!(layout.payload_sizes, vec![17, 0, 19, 13]);
+        assert_eq!(layout.hardlink_content_indices.get(&identity), Some(&2));
+    }
+}
+
 /// These tests cover payload + metadata integration, but they do equality tests on
 /// non-public fields / types, so they can't be actual integration tests, even though
 /// they otherwise would make more sense as integration tests.
@@ -555,6 +858,9 @@ mod test_payload_integration {
     use sha2::{Digest, Sha256};
     use std::borrow::Cow;
     use std::io::Read;
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    use std::path::Path;
 
     pub mod pkgs {
         pub mod v4 {
@@ -591,6 +897,10 @@ mod test_payload_integration {
             pub const RPM_FILE_TYPES: &str = concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/assets/RPMS/v6/rpm-file-types-1.0-1.noarch.rpm"
+            );
+            pub const RPM_HARDLINKS: &str = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/assets/RPMS/v6/rpm-hardlinks-1.0-1.noarch.rpm"
             );
 
             pub mod compressed {
@@ -671,6 +981,86 @@ mod test_payload_integration {
         test_basic_package_files(&package)
     }
 
+    /// Test extraction and payload iteration for RPM hardlink sets.
+    #[test]
+    fn test_hardlinks() -> Result<(), Box<dyn std::error::Error>> {
+        let package = Package::open(pkgs::v6::RPM_HARDLINKS)?;
+        let files: Vec<_> = package.files()?.collect::<Result<_, _>>()?;
+        let find_file = |path: &str| {
+            files
+                .iter()
+                .find(|file| file.metadata.path() == Path::new(path))
+                .expect("file should be present")
+        };
+        let find_content = |path: &str| {
+            files
+                .iter()
+                .find(|file| file.metadata.path() == Path::new(path))
+                .expect("file should be present")
+                .content
+                .as_deref()
+                .unwrap_or_default()
+        };
+
+        assert_eq!(find_content("/opt/rpm-hardlinks/alpha-1"), b"");
+        assert_eq!(find_content("/opt/rpm-hardlinks/alpha-2"), b"");
+        assert_eq!(
+            find_content("/opt/rpm-hardlinks/alpha-3"),
+            b"shared-content-alpha\n"
+        );
+        assert_eq!(find_content("/opt/rpm-hardlinks/beta-1"), b"");
+        assert_eq!(
+            find_content("/opt/rpm-hardlinks/beta-2"),
+            b"shared-content-beta\n"
+        );
+        assert!(!find_file("/opt/rpm-hardlinks/alpha-1").has_payload());
+        assert!(!find_file("/opt/rpm-hardlinks/alpha-2").has_payload());
+        assert!(find_file("/opt/rpm-hardlinks/alpha-3").has_payload());
+        assert!(!find_file("/opt/rpm-hardlinks/beta-1").has_payload());
+        assert!(find_file("/opt/rpm-hardlinks/beta-2").has_payload());
+
+        // check that when extracted, the contents of the hardlinks are as expected
+        // for all instances including ones which have empty contents in the archive
+        let temp_dir = tempfile::tempdir()?;
+        let extract_path = temp_dir.path().join("rpm-hardlinks");
+        package.extract(&extract_path)?;
+        verify_extracted_files(&extract_path, &files)?;
+        assert_eq!(
+            std::fs::read(extract_path.join("opt/rpm-hardlinks/alpha-1"))?,
+            b"shared-content-alpha\n"
+        );
+        assert_eq!(
+            std::fs::read(extract_path.join("opt/rpm-hardlinks/alpha-2"))?,
+            b"shared-content-alpha\n"
+        );
+        assert_eq!(
+            std::fs::read(extract_path.join("opt/rpm-hardlinks/alpha-3"))?,
+            b"shared-content-alpha\n"
+        );
+        assert_eq!(
+            std::fs::read(extract_path.join("opt/rpm-hardlinks/beta-1"))?,
+            b"shared-content-beta\n"
+        );
+
+        // check the inodes on disk directly
+        #[cfg(unix)]
+        {
+            let inode = |path: &str| -> Result<u64, Box<dyn std::error::Error>> {
+                Ok(std::fs::metadata(extract_path.join(path))?.ino())
+            };
+            let alpha = inode("opt/rpm-hardlinks/alpha-1")?;
+            assert_eq!(alpha, inode("opt/rpm-hardlinks/alpha-2")?);
+            assert_eq!(alpha, inode("opt/rpm-hardlinks/alpha-3")?);
+
+            let beta = inode("opt/rpm-hardlinks/beta-1")?;
+            assert_eq!(beta, inode("opt/rpm-hardlinks/beta-2")?);
+            assert_ne!(alpha, beta);
+            assert_ne!(alpha, inode("opt/rpm-hardlinks/standalone")?);
+        }
+
+        Ok(())
+    }
+
     #[test]
     #[cfg(feature = "gzip-compression")]
     fn test_files_after_decompress_gzip() -> Result<(), Box<dyn std::error::Error>> {
@@ -745,7 +1135,7 @@ mod test_payload_integration {
         ));
 
         // File 0: /etc/rpm-basic/example_config.toml
-        assert_eq!(files[0].content, expected_config);
+        assert_eq!(files[0].content().unwrap_or_default(), expected_config);
         assert_eq!(
             files[0].metadata,
             FileEntry {
@@ -755,10 +1145,10 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[0].content.len(),
+                size: files[0].content().unwrap_or_default().len(),
                 flags: FileFlags::CONFIG,
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[0].content)),
+                    digest: Cow::from(calculate_sha256(files[0].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -768,7 +1158,7 @@ mod test_payload_integration {
         );
 
         // File 1: /usr/bin/rpm-basic
-        assert_eq!(files[1].content, expected_script);
+        assert_eq!(files[1].content().unwrap_or_default(), expected_script);
         assert_eq!(
             files[1].metadata,
             FileEntry {
@@ -778,10 +1168,10 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[1].content.len(),
+                size: files[1].content().unwrap_or_default().len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[1].content)),
+                    digest: Cow::from(calculate_sha256(files[1].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256
                 }),
                 caps: None,
@@ -800,7 +1190,7 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[2].content.len(),
+                size: files[2].content().unwrap_or_default().len(),
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: None,
@@ -819,7 +1209,7 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[3].content.len(),
+                size: files[3].content().unwrap_or_default().len(),
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: None,
@@ -829,7 +1219,7 @@ mod test_payload_integration {
         );
 
         // File 4: /usr/lib/rpm-basic/module/__init__.py
-        assert_eq!(files[4].content, expected_init);
+        assert_eq!(files[4].content().unwrap_or_default(), expected_init);
         assert_eq!(
             files[4].metadata,
             FileEntry {
@@ -839,10 +1229,10 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[4].content.len(),
+                size: files[4].content().unwrap_or_default().len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[4].content)),
+                    digest: Cow::from(calculate_sha256(files[4].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -852,7 +1242,7 @@ mod test_payload_integration {
         );
 
         // File 5: /usr/lib/rpm-basic/module/hello.py
-        assert_eq!(files[5].content, expected_hello);
+        assert_eq!(files[5].content().unwrap_or_default(), expected_hello);
         assert_eq!(
             files[5].metadata,
             FileEntry {
@@ -862,10 +1252,10 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[5].content.len(),
+                size: files[5].content().unwrap_or_default().len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[5].content)),
+                    digest: Cow::from(calculate_sha256(files[5].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -884,7 +1274,7 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[6].content.len(),
+                size: files[6].content().unwrap_or_default().len(),
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: None,
@@ -895,7 +1285,10 @@ mod test_payload_integration {
 
         // File 7: /usr/share/doc/rpm-basic/README
         // README is generated in spec file: echo "No more half measures, Walter." > README
-        assert_eq!(files[7].content, b"No more half measures, Walter.\n");
+        assert_eq!(
+            files[7].content().unwrap_or_default(),
+            b"No more half measures, Walter.\n"
+        );
         assert_eq!(
             files[7].metadata,
             FileEntry {
@@ -905,10 +1298,10 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[7].content.len(),
+                size: files[7].content().unwrap_or_default().len(),
                 flags: FileFlags::DOC,
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[7].content)),
+                    digest: Cow::from(calculate_sha256(files[7].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -918,7 +1311,7 @@ mod test_payload_integration {
         );
 
         // File 8: /usr/share/rpm-basic/example_data.xml
-        assert_eq!(files[8].content, expected_xml);
+        assert_eq!(files[8].content().unwrap_or_default(), expected_xml);
         assert_eq!(
             files[8].metadata,
             FileEntry {
@@ -928,10 +1321,10 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[8].content.len(),
+                size: files[8].content().unwrap_or_default().len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[8].content)),
+                    digest: Cow::from(calculate_sha256(files[8].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256
                 }),
                 caps: None,
@@ -950,7 +1343,7 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[9].content.len(),
+                size: files[9].content().unwrap_or_default().len(),
                 flags: FileFlags::GHOST,
                 digest: None,
                 caps: None,
@@ -969,7 +1362,7 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[10].content.len(),
+                size: files[10].content().unwrap_or_default().len(),
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: None,
@@ -994,6 +1387,11 @@ mod test_payload_integration {
             if file.metadata.flags().contains(FileFlags::GHOST) {
                 // Ghost files should NOT be created during extraction
                 assert!(
+                    !file.has_payload(),
+                    "Ghost file {:?} should not have payload content",
+                    entry_path
+                );
+                assert!(
                     !file_path.exists(),
                     "Ghost file {:?} should NOT exist on disk",
                     entry_path
@@ -1014,11 +1412,28 @@ mod test_payload_integration {
                             entry_path
                         );
                         let disk_content = std::fs::read(&file_path)?;
-                        assert_eq!(
-                            disk_content, file.content,
-                            "Content mismatch for {:?}",
-                            entry_path
-                        );
+                        if disk_content.len() == file.content().unwrap_or_default().len() {
+                            assert_eq!(
+                                disk_content,
+                                file.content().unwrap_or_default(),
+                                "Content mismatch for {:?}",
+                                entry_path
+                            );
+                        } else {
+                            // Earlier members of an RPM hardlink set have no payload
+                            // bytes, while their header still reports the installed size.
+                            assert!(
+                                file.content.is_none() && file.metadata.size() > 0,
+                                "Unexpected payload/content size mismatch for {:?}",
+                                entry_path
+                            );
+                            assert_eq!(
+                                disk_content.len(),
+                                file.metadata.size(),
+                                "Installed size mismatch for {:?}",
+                                entry_path
+                            );
+                        }
                     }
                     FileType::SymbolicLink => {
                         // On Unix, verify symlinks are created properly
@@ -1120,7 +1535,7 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[0].content.len(),
+                size: files[0].content().unwrap_or_default().len(),
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: Some(Cow::from("")),
@@ -1130,7 +1545,7 @@ mod test_payload_integration {
         );
 
         // File 1: /opt/rpm-file-attrs/artifact
-        assert_eq!(files[1].content, b"artifact\n");
+        assert_eq!(files[1].content().unwrap_or_default(), b"artifact\n");
         assert_eq!(
             files[1].metadata,
             FileEntry {
@@ -1140,10 +1555,10 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[1].content.len(),
+                size: files[1].content().unwrap_or_default().len(),
                 flags: FileFlags::ARTIFACT,
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[1].content)),
+                    digest: Cow::from(calculate_sha256(files[1].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1153,7 +1568,7 @@ mod test_payload_integration {
         );
 
         // File 2: /opt/rpm-file-attrs/config
-        assert_eq!(files[2].content, b"config\n");
+        assert_eq!(files[2].content().unwrap_or_default(), b"config\n");
         assert_eq!(
             files[2].metadata,
             FileEntry {
@@ -1163,10 +1578,10 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[2].content.len(),
+                size: files[2].content().unwrap_or_default().len(),
                 flags: FileFlags::CONFIG,
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[2].content)),
+                    digest: Cow::from(calculate_sha256(files[2].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1176,7 +1591,10 @@ mod test_payload_integration {
         );
 
         // File 3: /opt/rpm-file-attrs/config_noreplace
-        assert_eq!(files[3].content, b"config_noreplace\n");
+        assert_eq!(
+            files[3].content().unwrap_or_default(),
+            b"config_noreplace\n"
+        );
         assert_eq!(
             files[3].metadata,
             FileEntry {
@@ -1186,10 +1604,10 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[3].content.len(),
+                size: files[3].content().unwrap_or_default().len(),
                 flags: FileFlags::CONFIG | FileFlags::NOREPLACE,
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[3].content)),
+                    digest: Cow::from(calculate_sha256(files[3].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1199,7 +1617,10 @@ mod test_payload_integration {
         );
 
         // File 4: /opt/rpm-file-attrs/different-owner-and-group
-        assert_eq!(files[4].content, b"different-owner-and-group\n");
+        assert_eq!(
+            files[4].content().unwrap_or_default(),
+            b"different-owner-and-group\n"
+        );
         assert_eq!(
             files[4].metadata,
             FileEntry {
@@ -1209,10 +1630,10 @@ mod test_payload_integration {
                 user: Cow::from("jane"),
                 group: Cow::from("bob"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[4].content.len(),
+                size: files[4].content().unwrap_or_default().len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[4].content)),
+                    digest: Cow::from(calculate_sha256(files[4].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1231,7 +1652,7 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[5].content.len(),
+                size: files[5].content().unwrap_or_default().len(),
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: Some(Cow::from("")),
@@ -1241,7 +1662,7 @@ mod test_payload_integration {
         );
 
         // File 6: /opt/rpm-file-attrs/dir/normal
-        assert_eq!(files[6].content, b"file-in-a-dir\n");
+        assert_eq!(files[6].content().unwrap_or_default(), b"file-in-a-dir\n");
         assert_eq!(
             files[6].metadata,
             FileEntry {
@@ -1251,10 +1672,10 @@ mod test_payload_integration {
                 user: Cow::from("root"),
                 group: Cow::from("root"),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[6].content.len(),
+                size: files[6].content().unwrap_or_default().len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[6].content)),
+                    digest: Cow::from(calculate_sha256(files[6].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1264,7 +1685,7 @@ mod test_payload_integration {
         );
 
         // File 7: /opt/rpm-file-attrs/doc
-        assert_eq!(files[7].content, b"doc\n");
+        assert_eq!(files[7].content().unwrap_or_default(), b"doc\n");
         assert_eq!(
             files[7].metadata,
             FileEntry {
@@ -1277,7 +1698,7 @@ mod test_payload_integration {
                 size: 4,
                 flags: FileFlags::DOC,
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[7].content)),
+                    digest: Cow::from(calculate_sha256(files[7].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1286,7 +1707,7 @@ mod test_payload_integration {
             }
         );
         // File 8: /opt/rpm-file-attrs/empty_caps
-        assert_eq!(files[8].content, b"empty_caps\n");
+        assert_eq!(files[8].content().unwrap_or_default(), b"empty_caps\n");
         assert_eq!(
             files[8].metadata,
             FileEntry {
@@ -1299,7 +1720,7 @@ mod test_payload_integration {
                 size: 11,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[8].content)),
+                    digest: Cow::from(calculate_sha256(files[8].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("=")),
@@ -1308,7 +1729,7 @@ mod test_payload_integration {
             }
         );
         // File 9: /opt/rpm-file-attrs/empty_caps2
-        assert_eq!(files[9].content, b"empty_caps2\n");
+        assert_eq!(files[9].content().unwrap_or_default(), b"empty_caps2\n");
         assert_eq!(
             files[9].metadata,
             FileEntry {
@@ -1321,7 +1742,7 @@ mod test_payload_integration {
                 size: 12,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[9].content)),
+                    digest: Cow::from(calculate_sha256(files[9].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("=")),
@@ -1330,7 +1751,7 @@ mod test_payload_integration {
             }
         );
         // File 10: /opt/rpm-file-attrs/example-binary
-        assert_eq!(files[10].content, b"example-binary\n");
+        assert_eq!(files[10].content().unwrap_or_default(), b"example-binary\n");
         assert_eq!(
             files[10].metadata,
             FileEntry {
@@ -1343,7 +1764,7 @@ mod test_payload_integration {
                 size: 15,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[10].content)),
+                    digest: Cow::from(calculate_sha256(files[10].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1352,7 +1773,10 @@ mod test_payload_integration {
             }
         );
         // File 11: /opt/rpm-file-attrs/example-confidential-file
-        assert_eq!(files[11].content, b"example-confidential-file\n");
+        assert_eq!(
+            files[11].content().unwrap_or_default(),
+            b"example-confidential-file\n"
+        );
         assert_eq!(
             files[11].metadata,
             FileEntry {
@@ -1365,7 +1789,7 @@ mod test_payload_integration {
                 size: 26,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[11].content)),
+                    digest: Cow::from(calculate_sha256(files[11].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1391,10 +1815,10 @@ mod test_payload_integration {
                 ima_signature: None,
             }
         );
-        assert_eq!(files[12].content.len(), 0);
+        assert_eq!(files[12].content().unwrap_or_default().len(), 0);
 
         // File 13: /opt/rpm-file-attrs/license
-        assert_eq!(files[13].content, b"license\n");
+        assert_eq!(files[13].content().unwrap_or_default(), b"license\n");
         assert_eq!(
             files[13].metadata,
             FileEntry {
@@ -1407,7 +1831,7 @@ mod test_payload_integration {
                 size: 8,
                 flags: FileFlags::LICENSE,
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[13].content)),
+                    digest: Cow::from(calculate_sha256(files[13].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1416,7 +1840,7 @@ mod test_payload_integration {
             }
         );
         // File 14: /opt/rpm-file-attrs/missingok
-        assert_eq!(files[14].content, b"missingok\n");
+        assert_eq!(files[14].content().unwrap_or_default(), b"missingok\n");
         assert_eq!(
             files[14].metadata,
             FileEntry {
@@ -1429,7 +1853,7 @@ mod test_payload_integration {
                 size: 10,
                 flags: FileFlags::MISSINGOK,
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[14].content)),
+                    digest: Cow::from(calculate_sha256(files[14].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1438,7 +1862,7 @@ mod test_payload_integration {
             }
         );
         // File 15: /opt/rpm-file-attrs/normal
-        assert_eq!(files[15].content, b"normal\n");
+        assert_eq!(files[15].content().unwrap_or_default(), b"normal\n");
         assert_eq!(
             files[15].metadata,
             FileEntry {
@@ -1451,7 +1875,7 @@ mod test_payload_integration {
                 size: 7,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[15].content)),
+                    digest: Cow::from(calculate_sha256(files[15].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1460,7 +1884,7 @@ mod test_payload_integration {
             }
         );
         // File 16: /opt/rpm-file-attrs/readme
-        assert_eq!(files[16].content, b"readme\n");
+        assert_eq!(files[16].content().unwrap_or_default(), b"readme\n");
         assert_eq!(
             files[16].metadata,
             FileEntry {
@@ -1473,7 +1897,7 @@ mod test_payload_integration {
                 size: 7,
                 flags: FileFlags::README,
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[16].content)),
+                    digest: Cow::from(calculate_sha256(files[16].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1482,7 +1906,7 @@ mod test_payload_integration {
             }
         );
         // File 17: /opt/rpm-file-attrs/symlink (symlink to normal)
-        assert_eq!(files[17].content, b"normal");
+        assert_eq!(files[17].content().unwrap_or_default(), b"normal");
         assert_eq!(
             files[17].metadata,
             FileEntry {
@@ -1500,8 +1924,8 @@ mod test_payload_integration {
                 ima_signature: None,
             }
         );
-        assert_eq!(files[17].content, b"normal");
-        assert_eq!(files[17].content.len(), 6);
+        assert_eq!(files[17].content().unwrap_or_default(), b"normal");
+        assert_eq!(files[17].content().unwrap_or_default().len(), 6);
         assert_eq!(files[17].metadata.size, 6);
 
         // File 18: /opt/rpm-file-attrs/symlink_dir (directory)
@@ -1522,10 +1946,10 @@ mod test_payload_integration {
                 ima_signature: None,
             }
         );
-        assert_eq!(files[18].content.len(), 0);
+        assert_eq!(files[18].content().unwrap_or_default().len(), 0);
 
         // File 19: /opt/rpm-file-attrs/symlink_dir/dir (symlink to ../dir)
-        assert_eq!(files[19].content, b"../dir");
+        assert_eq!(files[19].content().unwrap_or_default(), b"../dir");
         assert_eq!(
             files[19].metadata,
             FileEntry {
@@ -1543,12 +1967,12 @@ mod test_payload_integration {
                 ima_signature: None,
             }
         );
-        assert_eq!(files[19].content, b"../dir");
-        assert_eq!(files[19].content.len(), 6);
+        assert_eq!(files[19].content().unwrap_or_default(), b"../dir");
+        assert_eq!(files[19].content().unwrap_or_default().len(), 6);
         assert_eq!(files[19].metadata.size, 6);
 
         // File 20: /opt/rpm-file-attrs/verify_all
-        assert_eq!(files[20].content, b"verify_all\n");
+        assert_eq!(files[20].content().unwrap_or_default(), b"verify_all\n");
         assert_eq!(
             files[20].metadata,
             FileEntry {
@@ -1561,7 +1985,7 @@ mod test_payload_integration {
                 size: 11,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[20].content)),
+                    digest: Cow::from(calculate_sha256(files[20].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1570,7 +1994,7 @@ mod test_payload_integration {
             }
         );
         // File 21: /opt/rpm-file-attrs/verify_none
-        assert_eq!(files[21].content, b"verify_none\n");
+        assert_eq!(files[21].content().unwrap_or_default(), b"verify_none\n");
         assert_eq!(
             files[21].metadata,
             FileEntry {
@@ -1583,7 +2007,7 @@ mod test_payload_integration {
                 size: 12,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[21].content)),
+                    digest: Cow::from(calculate_sha256(files[21].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1592,7 +2016,7 @@ mod test_payload_integration {
             }
         );
         // File 22: /opt/rpm-file-attrs/verify_not
-        assert_eq!(files[22].content, b"verify_not\n");
+        assert_eq!(files[22].content().unwrap_or_default(), b"verify_not\n");
         assert_eq!(
             files[22].metadata,
             FileEntry {
@@ -1605,7 +2029,7 @@ mod test_payload_integration {
                 size: 11,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[22].content)),
+                    digest: Cow::from(calculate_sha256(files[22].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1614,7 +2038,7 @@ mod test_payload_integration {
             }
         );
         // File 23: /opt/rpm-file-attrs/verify_some
-        assert_eq!(files[23].content, b"verify_some\n");
+        assert_eq!(files[23].content().unwrap_or_default(), b"verify_some\n");
         assert_eq!(
             files[23].metadata,
             FileEntry {
@@ -1627,7 +2051,7 @@ mod test_payload_integration {
                 size: 12,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[23].content)),
+                    digest: Cow::from(calculate_sha256(files[23].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1636,7 +2060,7 @@ mod test_payload_integration {
             }
         );
         // File 24: /opt/rpm-file-attrs/with_caps
-        assert_eq!(files[24].content, b"with_caps\n");
+        assert_eq!(files[24].content().unwrap_or_default(), b"with_caps\n");
         assert_eq!(
             files[24].metadata,
             FileEntry {
@@ -1649,7 +2073,7 @@ mod test_payload_integration {
                 size: 10,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[24].content)),
+                    digest: Cow::from(calculate_sha256(files[24].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("cap_sys_ptrace,cap_sys_admin=ep")),
@@ -1663,7 +2087,7 @@ mod test_payload_integration {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/assets/SOURCES/rpm-file-attrs-sysusers.conf"
         ));
-        assert_eq!(files[25].content, expected_sysusers);
+        assert_eq!(files[25].content().unwrap_or_default(), expected_sysusers);
         assert_eq!(
             files[25].metadata,
             FileEntry {
@@ -1676,7 +2100,7 @@ mod test_payload_integration {
                 size: expected_sysusers.len(),
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[25].content)),
+                    digest: Cow::from(calculate_sha256(files[25].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: Some(Cow::from("")),
@@ -1730,7 +2154,7 @@ mod test_payload_integration {
                 size: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[0].content)),
+                    digest: Cow::from(calculate_sha256(files[0].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -1738,9 +2162,10 @@ mod test_payload_integration {
                 ima_signature: None,
             }
         );
-        assert_eq!(files[0].content, expected_empty);
-        assert_eq!(files[0].content.len(), 0);
+        assert_eq!(files[0].content().unwrap_or_default(), expected_empty);
+        assert_eq!(files[0].content().unwrap_or_default().len(), 0);
         assert_eq!(files[0].metadata.size, 0);
+        assert!(files[0].has_payload());
 
         // File 1: /opt/rpm-file-types/file with spaces & special (chars).txt
         assert_eq!(
@@ -1755,7 +2180,7 @@ mod test_payload_integration {
                 size: 31,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[1].content)),
+                    digest: Cow::from(calculate_sha256(files[1].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -1763,10 +2188,13 @@ mod test_payload_integration {
                 ima_signature: None,
             }
         );
-        assert_eq!(files[1].content, expected_spaces);
-        assert_eq!(files[1].content.len(), expected_spaces.len());
+        assert_eq!(files[1].content().unwrap_or_default(), expected_spaces);
+        assert_eq!(
+            files[1].content().unwrap_or_default().len(),
+            expected_spaces.len()
+        );
         assert_eq!(files[1].metadata.size, expected_spaces.len());
-        assert_eq!(files[1].content.len(), 31);
+        assert_eq!(files[1].content().unwrap_or_default().len(), 31);
 
         // File 2: /opt/rpm-file-types/rpm-rs-logo.png (binary content)
         assert_eq!(
@@ -1781,7 +2209,7 @@ mod test_payload_integration {
                 size: 2017,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
-                    digest: Cow::from(calculate_sha256(&files[2].content)),
+                    digest: Cow::from(calculate_sha256(files[2].content().unwrap_or_default())),
                     algo: DigestAlgorithm::Sha2_256,
                 }),
                 caps: None,
@@ -1789,12 +2217,18 @@ mod test_payload_integration {
                 ima_signature: None,
             }
         );
-        assert_eq!(files[2].content, expected_png);
-        assert_eq!(files[2].content.len(), expected_png.len());
+        assert_eq!(files[2].content().unwrap_or_default(), expected_png);
+        assert_eq!(
+            files[2].content().unwrap_or_default().len(),
+            expected_png.len()
+        );
         assert_eq!(files[2].metadata.size, expected_png.len());
-        assert_eq!(files[2].content.len(), 2017);
+        assert_eq!(files[2].content().unwrap_or_default().len(), 2017);
         // Verify PNG magic bytes
-        assert_eq!(&files[2].content[0..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            &files[2].content().unwrap_or_default()[0..8],
+            b"\x89PNG\r\n\x1a\n"
+        );
 
         Ok(())
     }
@@ -1838,7 +2272,7 @@ mod test_payload_integration {
                     size: 162,
                     flags: FileFlags::SPECFILE,
                     digest: Some(FileDigest {
-                        digest: Cow::from(calculate_sha256(&files[0].content)),
+                        digest: Cow::from(calculate_sha256(files[0].content().unwrap_or_default())),
                         algo: DigestAlgorithm::Sha2_256,
                     }),
                     caps: None,
@@ -1847,10 +2281,10 @@ mod test_payload_integration {
                 }
             );
             assert_eq!(files[0].metadata.size, 162);
-            assert_eq!(files[0].content.len(), 162);
+            assert_eq!(files[0].content().unwrap_or_default().len(), 162);
 
             // Verify spec file content contains expected fields
-            let spec_content = std::str::from_utf8(&files[0].content)?;
+            let spec_content = std::str::from_utf8(&files[0].content().unwrap_or_default())?;
             assert!(spec_content.contains("Name:           rpm-empty"));
             assert!(spec_content.contains("Version:        0"));
             assert!(spec_content.contains("License:        LGPL"));
@@ -1863,7 +2297,13 @@ mod test_payload_integration {
     /// Package::files(), without loading the payload into memory upfront.
     #[test]
     fn test_package_reader_matches_files_api() -> Result<(), Box<dyn std::error::Error>> {
-        for path in [pkgs::v4::RPM_BASIC, pkgs::v6::RPM_BASIC] {
+        for path in [
+            pkgs::v4::RPM_BASIC,
+            pkgs::v6::RPM_BASIC,
+            pkgs::v6::RPM_FILE_ATTRS,
+            pkgs::v6::RPM_FILE_TYPES,
+            pkgs::v6::RPM_HARDLINKS,
+        ] {
             let package = Package::open(path)?;
             let expected: Vec<RpmFile> = package.files()?.collect::<Result<_, _>>()?;
 
@@ -1891,7 +2331,7 @@ mod test_payload_integration {
                 );
                 assert_eq!(
                     actual_content,
-                    &expected_file.content,
+                    expected_file.content.as_deref().unwrap_or_default(),
                     "content mismatch for {}",
                     actual_path.display()
                 );
@@ -1917,7 +2357,7 @@ mod test_payload_integration {
         let mut content = Vec::new();
         second.read_to_end(&mut content)?;
 
-        assert_eq!(content, expected[1].content);
+        assert_eq!(content, expected[1].content.as_deref().unwrap_or_default());
         Ok(())
     }
 
@@ -1932,6 +2372,12 @@ mod test_payload_integration {
             .filter(|f| f.metadata.flags().contains(FileFlags::GHOST))
             .count();
         assert!(ghost_count > 0, "fixture must have at least one ghost file");
+        assert!(
+            expected
+                .iter()
+                .filter(|f| f.metadata.flags().contains(FileFlags::GHOST))
+                .all(|f| !f.has_payload())
+        );
 
         let mut reader = PackageReader::open(pkgs::v6::RPM_BASIC)?;
         let mut ghost_seen = 0usize;
@@ -1943,6 +2389,7 @@ mod test_payload_integration {
                 let mut buf = Vec::new();
                 file.read_to_end(&mut buf)?;
                 assert!(buf.is_empty(), "ghost file must have empty content");
+                assert!(!file.has_payload());
                 // Explicit finish on a ghost file must be a no-op.
                 file.finish()?;
                 ghost_seen += 1;
@@ -1950,7 +2397,8 @@ mod test_payload_integration {
                 // Use explicit finish() instead of drop for non-ghost files.
                 let mut buf = Vec::new();
                 file.read_to_end(&mut buf)?;
-                assert_eq!(buf, expected[i].content);
+                assert_eq!(file.has_payload(), expected[i].has_payload());
+                assert_eq!(buf, expected[i].content.as_deref().unwrap_or_default());
                 file.finish()?;
             }
             i += 1;
@@ -1986,7 +2434,7 @@ mod test_payload_integration {
         assert_eq!(actual.len(), expected.len());
         for (i, (path, content)) in actual.iter().enumerate() {
             assert_eq!(*path, expected[i].0);
-            assert_eq!(*content, expected[i].1);
+            assert_eq!(*content, expected[i].1.as_deref().unwrap_or_default());
         }
         Ok(())
     }
