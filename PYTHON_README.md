@@ -121,7 +121,10 @@ for entry in pkg.metadata.file_entries():
 
 # Read file contents (decompresses the payload)
 for f in pkg.files():
-    print(f"{f.metadata.path}: {len(f.content)} bytes")
+    if f.content is None:
+        print(f"{f.metadata.path}: no payload content")
+    else:
+        print(f"{f.metadata.path}: {len(f.content)} bytes")
 ```
 
 #### Extract package contents to disk

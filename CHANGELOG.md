@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `PackageMetadata::iter_changelog_entries()` for iterating over changelog entries without collecting them into a list.
 - `Lead` construction and accessors for RPM reconstruction tools.
+- `RpmFile::has_payload()` identifies entries whose content is present in the payload.
+- `StreamingRpmFile::has_payload()` identifies entries whose content is present while streaming.
+
+### Breaking Changes
+
+- `RpmFile::content` is moved to a function `RpmFile::content()`, and now returns optional payload bytes; entries without payload content return `None` in Rust and Python.
 
 ### Fixed
 
