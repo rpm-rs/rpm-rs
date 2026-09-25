@@ -114,7 +114,10 @@
 //! // Iterate over file contents (decompresses the payload)
 //! for entry in pkg.files()? {
 //!     let file = entry?;
-//!     println!("{}: {} bytes", file.metadata.path().display(), file.content.len());
+//!     match file.content() {
+//!         Some(content) => println!("{}: {} bytes", file.metadata.path().display(), content.len()),
+//!         None => println!("{}: no payload content", file.metadata.path().display()),
+//!     }
 //! }
 //! # Ok(())
 //! # }
