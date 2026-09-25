@@ -947,11 +947,12 @@ mod hardlinks {
             ]
         );
         let content = |path: &str| {
-            &files
+            files
                 .iter()
                 .find(|file| file.metadata.path() == Path::new(path))
                 .expect("file should be present")
-                .content
+                .content()
+                .unwrap_or_default()
         };
         assert!(content("/opt/with-dir-hardlinks").is_empty());
         assert_eq!(content("/opt/with-dir-hardlinks/alpha-1"), b"");
@@ -960,6 +961,10 @@ mod hardlinks {
             b"shared content"
         );
         assert_eq!(content("/opt/with-dir-hardlinks/standalone"), b"standalone");
+        assert!(files[0].has_payload());
+        assert!(files[1].has_payload());
+        assert!(!files[2].has_payload());
+        assert!(files[3].has_payload());
 
         Ok(())
     }
@@ -1094,8 +1099,44 @@ mod hardlinks {
 
         let files = package.files()?.collect::<Result<Vec<_>, _>>()?;
         assert_eq!(files.len(), 2);
-        assert!(files[0].content.is_empty());
-        assert_eq!(files[1].content, content);
+        assert!(files[0].content().is_none());
+        assert!(!files[0].has_payload());
+        assert_eq!(files[1].content(), Some(content.as_slice()));
+        assert!(files[1].has_payload());
+        Ok(())
+    }
+
+    /// Verify that an empty stripped hardlink member is distinguished from an
+    /// empty regular file that has a payload record.
+    #[test]
+    fn empty_hardlink_member_reports_missing_payload() -> Result<(), Box<dyn std::error::Error>> {
+        let package = PackageBuilder::new(
+            "empty-hardlinks",
+            "1.0",
+            "MIT",
+            "noarch",
+            "empty hardlink test",
+        )
+        .with_file_contents(
+            b"",
+            FileOptions::new("/usr/lib/hardlinks/anchor")
+                .permissions(0o640)
+                .hardlink("payload:empty"),
+        )?
+        .with_file_contents(
+            b"",
+            FileOptions::new("/usr/lib/hardlinks/alias")
+                .permissions(0o640)
+                .hardlink("payload:empty"),
+        )?
+        .build()?;
+
+        let files = package.files()?.collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(files.len(), 2);
+        assert!(files[0].content().is_none());
+        assert_eq!(files[1].content(), Some(&[][..]));
+        assert!(!files[0].has_payload());
+        assert!(files[1].has_payload());
         Ok(())
     }
 

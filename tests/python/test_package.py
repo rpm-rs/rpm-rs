@@ -55,7 +55,9 @@ class TestFiles:
         files = pkg.files()
         for f in files:
             assert isinstance(f.metadata, FileEntry)
-            assert isinstance(f.content, bytes)
+            assert isinstance(f.content, (bytes, type(None)))
+            assert isinstance(f.has_payload, bool)
+            assert f.has_payload is (f.content is not None)
 
     def test_files_with_types(self):
         pkg = Package.open(RPM_FILE_TYPES)

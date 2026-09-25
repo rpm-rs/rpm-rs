@@ -1145,7 +1145,7 @@ impl PyPackageSegmentOffsets {
 // RpmFile
 // ---------------------------------------------------------------------------
 
-/// A file from an RPM package payload, including its metadata and content bytes.
+/// A file from an RPM package payload, including its metadata and optional content bytes.
 #[pyclass(name = "RpmFile")]
 pub struct PyRpmFile(pub(crate) crate::RpmFile<'static>);
 
@@ -1155,7 +1155,7 @@ impl PyRpmFile {
         format!(
             "RpmFile({:?}, {} bytes)",
             self.0.metadata.path().display(),
-            self.0.content.len()
+            self.0.content().map_or(0, <[u8]>::len)
         )
     }
 
@@ -1165,10 +1165,16 @@ impl PyRpmFile {
         PyFileEntry(self.0.metadata.clone())
     }
 
-    /// The raw file content bytes.
+    /// The raw file content bytes, or `None` when the entry has no payload data.
     #[getter]
-    fn content(&self) -> &[u8] {
-        &self.0.content
+    fn content(&self) -> Option<&[u8]> {
+        self.0.content()
+    }
+
+    /// Whether the entry has payload content represented in the archive.
+    #[getter]
+    fn has_payload(&self) -> bool {
+        self.0.has_payload()
     }
 }
 
@@ -1187,7 +1193,10 @@ impl PyRpmFile {
 /// ```python
 /// reader = PackageReader.open("package.rpm")
 /// for entry in reader:
-///     print(f"{entry.metadata.path}: {len(entry.content)} bytes")
+///     if entry.content is None:
+///         print(f"{entry.metadata.path}: no payload content")
+///     else:
+///         print(f"{entry.metadata.path}: {len(entry.content)} bytes")
 /// ```
 #[pyclass(name = "PackageReader")]
 pub struct PyPackageReader {
@@ -1233,11 +1242,15 @@ impl PyPackageReader {
             match reader.next_file() {
                 Ok(Some(mut file)) => {
                     let metadata = file.metadata.clone();
+                    let has_payload = file.has_payload();
                     let mut content = Vec::new();
                     file.read_to_end(&mut content)
                         .map_err(|e| to_pyerr(crate::Error::Io(e)))?;
                     file.finish().map_err(|e| to_pyerr(crate::Error::Io(e)))?;
-                    Ok(Some(PyRpmFile(crate::RpmFile { metadata, content })))
+                    Ok(Some(PyRpmFile(crate::RpmFile::from_parts(
+                        metadata,
+                        has_payload.then_some(content),
+                    ))))
                 }
                 Ok(None) => Ok(None),
                 Err(e) => Err(to_pyerr(e)),
