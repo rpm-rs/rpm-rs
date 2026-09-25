@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `PackageMetadata::iter_changelog_entries()` for iterating over changelog entries without collecting them into a list.
+- `Lead` construction and accessors for RPM reconstruction tools.
 
 ## 0.28.0
 
