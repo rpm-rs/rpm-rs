@@ -933,6 +933,7 @@ where
 }
 
 mod test {
+    /// File modes preserve type and mask permissions during conversion and updates.
     #[test]
     fn test_file_mode() -> Result<(), Box<dyn std::error::Error>> {
         use super::*;
@@ -1043,6 +1044,7 @@ mod test {
         Ok(())
     }
 
+    /// File options accept recognized capability names and flags.
     #[cfg(feature = "payload")]
     #[test]
     fn test_verify_capabilities_valid() {
@@ -1050,6 +1052,7 @@ mod test {
         blank_file.caps("cap_net_admin,cap_net_raw+p").unwrap();
     }
 
+    /// File options reject unrecognized capability names.
     #[cfg(feature = "payload")]
     #[test]
     fn test_verify_capabilities_invalid() -> Result<(), crate::errors::Error> {
@@ -1058,6 +1061,7 @@ mod test {
         Ok(())
     }
 
+    /// Scriptlet options produce the expected header records.
     #[cfg(feature = "payload")]
     #[test]
     fn test_scriptlet_builder() {

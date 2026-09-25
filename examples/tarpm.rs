@@ -8,9 +8,11 @@ use std::{
 
 use base64::prelude::*;
 use clap::{CommandFactory, Parser};
+use num::FromPrimitive;
 use rpm::{
-    BuildConfig, CompressionType, FileOptions, FileType, Header, HeaderEntry, IndexData, IndexTag,
-    Lead, Package, PackageBuilder, RpmFormat, Tag, Timestamp, constants,
+    BuildConfig, CompressionType, DigestAlgorithm, FileOptions, FileType, Header, HeaderEditor,
+    HeaderEntry, IndexData, IndexTag, Lead, Package, PayloadBuilder, RpmFormat, Tag, Timestamp,
+    constants, is_region_tag,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -79,6 +81,8 @@ struct FileDocument {
     mtime: u64,
     user: String,
     group: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,9 +165,9 @@ fn extract(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     write_json(
         &root.join("signature.json"),
-        &header_document(&package.metadata.signature)?,
+        &header_document(&package.metadata.signature, constants::signature_tag_name)?,
     )?;
-    let mut header = header_document(&package.metadata.header)?;
+    let mut header = header_document(&package.metadata.header, constants::main_tag_name)?;
     header.files = package
         .metadata
         .get_file_entries()?
@@ -206,7 +210,7 @@ fn create(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     apply_dependency_documents(&mut source_entries, document.dependencies.as_ref())?;
     apply_changelog_documents(&mut source_entries, document.changelog.as_ref())?;
     let get = |name: &str| -> Option<String> {
-        let number = constants::parse_tag_name(name)?;
+        let number = constants::parse_main_tag_name(name)?;
         source_entries.iter().find_map(|entry| {
             (entry.tag == number).then(|| match &entry.data {
                 IndexData::StringTag(value) => value.clone(),
@@ -221,10 +225,6 @@ fn create(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         return Err("source RPMs are not supported by this example".into());
     }
     let name = get("RPMTAG_NAME").ok_or("header.json has no RPMTAG_NAME")?;
-    let version = get("RPMTAG_VERSION").ok_or("header.json has no RPMTAG_VERSION")?;
-    let license = get("RPMTAG_LICENSE").unwrap_or_else(|| "NOASSERTION".to_string());
-    let arch = get("RPMTAG_ARCH").unwrap_or_else(|| "noarch".to_string());
-    let summary = get("RPMTAG_SUMMARY").unwrap_or_else(|| name.clone());
     let format = if source_entries.iter().any(|entry| {
         entry.tag == IndexTag::RPMTAG_RPMFORMAT as u32
             && matches!(&entry.data, IndexData::Int32(values) if values.first() == Some(&6))
@@ -239,24 +239,25 @@ fn create(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         compression_name.parse::<CompressionType>()?
     };
-    let mut builder = PackageBuilder::new(&name, &version, &license, &arch, &summary);
-    builder.using_config(BuildConfig::from(format).compression(compression));
-    if let Some(release) = get("RPMTAG_RELEASE") {
-        builder.release(release);
-    }
-    if let Some(description) = get("RPMTAG_DESCRIPTION") {
-        builder.description(description);
-    }
-    let source_header_entries = source_entries
+    let mut builder = PayloadBuilder::new();
+    let file_digest_algorithm = source_entries
         .iter()
-        .filter(|entry| {
-            entry.tag != constants::HEADER_IMMUTABLE && entry.tag != constants::HEADER_REGIONS
+        .find(|entry| entry.tag == IndexTag::RPMTAG_FILEDIGESTALGO as u32)
+        .and_then(|entry| match &entry.data {
+            IndexData::Int32(values) => values.first().copied(),
+            _ => None,
         })
-        .cloned()
-        .collect::<Vec<_>>();
+        .unwrap_or(DigestAlgorithm::Md5 as u32);
+    let file_digest_algorithm = DigestAlgorithm::from_u32(file_digest_algorithm)
+        .ok_or("unsupported file digest algorithm in header.json")?;
+    builder.using_config(
+        BuildConfig::from(format)
+            .compression(compression)
+            .file_digest_algorithm(file_digest_algorithm),
+    );
     let source_package = Package::assemble(
         Lead::new(&name),
-        Header::from_entries(source_header_entries, IndexTag::RPMTAG_HEADERIMMUTABLE),
+        Header::from_entries(source_entries.clone(), IndexTag::RPMTAG_HEADERIMMUTABLE),
         Vec::new(),
         format,
         None,
@@ -274,6 +275,7 @@ fn create(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 modified_at: entry.modified_at(),
                 user: entry.user().to_string(),
                 group: entry.group().to_string(),
+                language: entry.language().map(str::to_string),
                 linkto: entry.linkto().map(str::to_string),
                 flags: entry.flags(),
             },
@@ -290,6 +292,7 @@ fn create(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                     modified_at: Timestamp(file.mtime.try_into()?),
                     user: file.user.clone(),
                     group: file.group.clone(),
+                    language: file.language.clone(),
                     linkto: file.linkto.clone(),
                     flags: rpm::FileFlags::from_bits_retain(file.flags),
                 },
@@ -314,62 +317,22 @@ fn create(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             .user(&metadata.user)
             .group(&metadata.group)
             .modified_at(metadata.modified_at);
+            let options = if let Some(language) = &metadata.language {
+                options.language(language)
+            } else {
+                options
+            };
             builder.with_ghost(options)?;
         }
     }
-    let built = builder.build_payload()?;
+    let built = builder.build()?;
 
-    let derived = |tag: u32| {
-        [
-            IndexTag::RPMTAG_SIZE as u32,
-            IndexTag::RPMTAG_LONGSIZE as u32,
-            IndexTag::RPMTAG_ARCHIVESIZE as u32,
-            IndexTag::RPMTAG_LONGARCHIVESIZE as u32,
-            IndexTag::RPMTAG_FILEDIGESTALGO as u32,
-            IndexTag::RPMTAG_RPMFORMAT as u32,
-            IndexTag::RPMTAG_FILESIZES as u32,
-            IndexTag::RPMTAG_LONGFILESIZES as u32,
-            IndexTag::RPMTAG_FILEMODES as u32,
-            IndexTag::RPMTAG_FILERDEVS as u32,
-            IndexTag::RPMTAG_FILEMTIMES as u32,
-            IndexTag::RPMTAG_FILEDIGESTS as u32,
-            IndexTag::RPMTAG_FILELINKTOS as u32,
-            IndexTag::RPMTAG_FILEFLAGS as u32,
-            IndexTag::RPMTAG_FILEUSERNAME as u32,
-            IndexTag::RPMTAG_FILEGROUPNAME as u32,
-            IndexTag::RPMTAG_FILEDEVICES as u32,
-            IndexTag::RPMTAG_FILEINODES as u32,
-            IndexTag::RPMTAG_DIRINDEXES as u32,
-            IndexTag::RPMTAG_FILELANGS as u32,
-            IndexTag::RPMTAG_FILEVERIFYFLAGS as u32,
-            IndexTag::RPMTAG_BASENAMES as u32,
-            IndexTag::RPMTAG_DIRNAMES as u32,
-            IndexTag::RPMTAG_FILECAPS as u32,
-            IndexTag::RPMTAG_PAYLOADSHA256 as u32,
-            IndexTag::RPMTAG_PAYLOADSHA256ALT as u32,
-            IndexTag::RPMTAG_PAYLOAD_SHA3_256 as u32,
-            IndexTag::RPMTAG_PAYLOAD_SHA3_256_ALT as u32,
-            IndexTag::RPMTAG_PAYLOAD_SHA512 as u32,
-            IndexTag::RPMTAG_PAYLOAD_SHA512_ALT as u32,
-            IndexTag::RPMTAG_PAYLOADSIZE as u32,
-            IndexTag::RPMTAG_PAYLOADSIZEALT as u32,
-            IndexTag::RPMTAG_PAYLOADCOMPRESSOR as u32,
-            IndexTag::RPMTAG_PAYLOADFLAGS as u32,
-        ]
-        .contains(&tag)
-    };
-    let mut entries: Vec<HeaderEntry> = source_entries
-        .into_iter()
-        .filter(|entry| entry.tag != constants::HEADER_IMMUTABLE && !derived(entry.tag))
-        .collect();
-    for (tag, data) in built.header.get_all_entries()? {
-        if derived(tag) {
-            entries.push(HeaderEntry::new(tag, data));
-        }
-    }
+    let mut header = HeaderEditor::new(IndexTag::RPMTAG_HEADERIMMUTABLE);
+    header.extend(source_entries);
+    built.apply_to_header(&mut header);
     let package = Package::assemble(
         Lead::new(&name),
-        Header::from_entries(entries, IndexTag::RPMTAG_HEADERIMMUTABLE),
+        header.build(),
         built.compressed_payload,
         format,
         Some(rpm::SignatureHeaderBuilder::DEFAULT_RESERVED_SPACE),
@@ -383,12 +346,13 @@ struct FileOverride {
     modified_at: Timestamp,
     user: String,
     group: String,
+    language: Option<String>,
     linkto: Option<String>,
     flags: rpm::FileFlags,
 }
 
 fn add_payload_tree(
-    builder: &mut PackageBuilder,
+    builder: &mut PayloadBuilder,
     root: &Path,
     path: &Path,
     overrides: &std::collections::BTreeMap<String, FileOverride>,
@@ -411,6 +375,7 @@ fn add_payload_tree(
             .unwrap_or(default_modified_at);
         let user = override_data.map(|data| data.user.as_str());
         let group = override_data.map(|data| data.group.as_str());
+        let language = override_data.and_then(|data| data.language.as_deref());
         if metadata.file_type().is_dir() {
             let mut options = FileOptions::dir(&destination)
                 .modified_at(modified_at)
@@ -424,6 +389,9 @@ fn add_payload_tree(
             }
             if let Some(group) = group {
                 options = options.group(group);
+            }
+            if let Some(language) = language {
+                options = options.language(language);
             }
             builder.with_dir_entry(options)?;
             add_payload_tree(builder, root, &child_path, overrides)?;
@@ -443,6 +411,9 @@ fn add_payload_tree(
             if let Some(group) = group {
                 options = options.group(group);
             }
+            if let Some(language) = language {
+                options = options.language(language);
+            }
             builder.with_symlink(options)?;
         } else if metadata.file_type().is_file() {
             let mut options = FileOptions::new(&destination).modified_at(modified_at);
@@ -454,6 +425,9 @@ fn add_payload_tree(
             }
             if let Some(group) = group {
                 options = options.group(group);
+            }
+            if let Some(language) = language {
+                options = options.language(language);
             }
             builder.with_file(&child_path, options)?;
         } else {
@@ -477,12 +451,15 @@ fn lead_document(lead: &Lead) -> LeadDocument {
     }
 }
 
-fn header_document<T: Tag>(header: &Header<T>) -> Result<HeaderDocument, rpm::Error> {
+fn header_document<T: Tag>(
+    header: &Header<T>,
+    tag_name: fn(u32) -> String,
+) -> Result<HeaderDocument, rpm::Error> {
     let tags = header
         .get_all_entries()?
         .into_iter()
-        .filter(|(tag, _)| *tag != constants::HEADER_IMMUTABLE && *tag != constants::HEADER_REGIONS)
-        .map(|(tag, data)| data_to_json_tag(tag, data))
+        .filter(|(tag, _)| !is_region_tag(*tag))
+        .map(|(tag, data)| data_to_json_tag(tag, data, tag_name))
         .collect();
     Ok(HeaderDocument {
         tags,
@@ -490,7 +467,7 @@ fn header_document<T: Tag>(header: &Header<T>) -> Result<HeaderDocument, rpm::Er
     })
 }
 
-fn data_to_json_tag(tag: u32, data: IndexData) -> JsonTag {
+fn data_to_json_tag(tag: u32, data: IndexData, tag_name: fn(u32) -> String) -> JsonTag {
     let (kind, value) = match data {
         IndexData::Null => ("null", None),
         IndexData::Char(value) => ("char", Some(json!(value))),
@@ -504,7 +481,7 @@ fn data_to_json_tag(tag: u32, data: IndexData) -> JsonTag {
         IndexData::I18NString(value) => ("i18n_string", Some(json!(value))),
     };
     JsonTag {
-        tag: constants::tag_name(tag),
+        tag: tag_name(tag),
         kind: kind.to_string(),
         value,
         file: None,
@@ -519,6 +496,7 @@ fn file_document(entry: rpm::FileEntry<'_>) -> FileDocument {
         mtime: entry.modified_at().0 as u64,
         user: entry.user().to_string(),
         group: entry.group().to_string(),
+        language: entry.language().map(str::to_string),
         digest: entry.digest().map(|digest| digest.as_hex().to_string()),
         linkto: entry.linkto().map(str::to_string),
         flags: entry.flags().bits(),
@@ -687,7 +665,7 @@ fn json_tag_to_entry(
     tag: &JsonTag,
     root: &Path,
 ) -> Result<HeaderEntry, Box<dyn std::error::Error>> {
-    let number = constants::parse_tag_name(&tag.tag)
+    let number = constants::parse_main_tag_name(&tag.tag)
         .ok_or_else(|| format!("unknown tag name: {}", tag.tag))?;
     let value = if let Some(file) = &tag.file {
         Value::String(fs::read_to_string(root.join(file))?)

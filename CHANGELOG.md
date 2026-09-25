@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add file modification-time override API to `FileOptions`.
 - Add lang/locale-setting API for `FileOptions` and `FileEntry`.
 - Reusable payload construction metadata for package tools.
+- `PayloadBuilder` and `HeaderEditor` let package tools rebuild payloads while preserving editable and unknown header tags.
+- `is_region_tag()` identifies RPM header region records.
 
 ## 0.29.0
 
@@ -39,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- `PayloadBuildResult` exposes ordered files and digests without duplicated header/tag fields; files are read through `files()`, and `apply_to_header()` applies staged metadata.
 - `RpmFile::content` is moved to a function `RpmFile::content()`, and now returns optional payload bytes; entries without payload content return `None` in Rust and Python.
 
 ### Fixed
