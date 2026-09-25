@@ -1,6 +1,11 @@
 #![allow(clippy::too_many_arguments)]
 
 mod hardlinks;
+mod payload_build;
+mod staging;
+
+pub use payload_build::PayloadBuilder;
+use staging::FileStaging;
 
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -15,7 +20,6 @@ use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 
 use base64::prelude::*;
-use digest::Digest;
 use rpm_version::Evr;
 
 use super::compressor::Compressor;
@@ -28,35 +32,91 @@ use crate::{Timestamp, constants::*};
 #[cfg(feature = "signature-meta")]
 use crate::signature;
 
+use crate::FileCaps;
 use crate::Package;
 use crate::PackageMetadata;
 
 use crate::{CompressionType, CompressionWithLevel, RpmFormat};
 
-/// The payload and derived metadata produced by [`PackageBuilder`].
+/// Resolved metadata for one file in RPM header order after payload construction.
 ///
-/// This is useful to tools which want to reuse rpm-rs' CPIO, compression,
-/// ordering, digest, and hardlink handling while assembling the RPM headers
-/// themselves. The header entries are returned in the same sorted order used
-/// by an RPM header and include the file and payload-related records.
+/// This includes calculated archive facts and effective metadata selected during
+/// staging. For fields also stored in CPIO, edit the staging options before
+/// building so the archive and header stay consistent.
+#[derive(Clone, Debug)]
+pub struct BuiltFile {
+    /// Normalized package path.
+    pub path: String,
+    /// Directory portion used by the RPM file-list tags.
+    pub directory: String,
+    /// Basename used by the RPM file-list tags.
+    pub basename: String,
+    /// File size reported in the RPM header, even for hardlinks without bytes.
+    pub size: u64,
+    /// The file's computed digest, or an empty string for non-regular files and ghosts.
+    pub digest: String,
+    /// RPM file mode, including type and permission bits.
+    pub mode: FileMode,
+    /// Effective modification time.
+    pub modified_at: Timestamp,
+    /// Symbolic-link target, if any.
+    pub linkto: String,
+    /// RPM file flags.
+    pub flags: FileFlags,
+    /// RPM file verification flags.
+    pub verify_flags: FileVerifyFlags,
+    /// Named file owner.
+    pub user: String,
+    /// Named file group.
+    pub group: String,
+    /// RPM device identity.
+    pub device: u32,
+    /// RPM inode identity.
+    pub inode: u32,
+    /// Optional file capabilities.
+    pub caps: Option<FileCaps>,
+    /// Bytes written for this file's CPIO member; earlier hardlinks carry zero.
+    pub payload_size: u64,
+}
+
+/// The payload and resolved file metadata produced by [`PayloadBuilder`] or [`PackageBuilder`].
+///
+/// File arrays not represented by [`BuiltFile`] remain the caller's responsibility.
+/// In particular, unknown positional arrays must be remapped or removed if files
+/// are added, removed, or reordered.
 #[derive(Debug)]
 pub struct PayloadBuildResult {
     /// The compressed payload bytes.
     pub compressed_payload: Vec<u8>,
-    /// The complete generated main header, including all derived records.
-    pub header: Header<IndexTag>,
-    /// Generated file-list header entries in RPM header order.
-    pub file_metadata: Vec<HeaderEntry>,
+    /// Files in RPM header order. Exposed immutably so derived header entries
+    /// cannot diverge from the payload after construction.
+    files: Vec<BuiltFile>,
     /// The total installed size reported by the package.
     pub installed_size: u64,
     /// The uncompressed CPIO archive size.
     pub archive_size: u64,
     /// The compression used for the payload.
     pub compression: CompressionType,
-    /// Generated payload digest and compression-related header entries.
-    pub payload_digests: Vec<HeaderEntry>,
-    /// Groups of package paths sharing an RPM device and inode identity.
-    pub hardlinks: Vec<Vec<String>>,
+    /// The format used when encoding the archive and derived tags.
+    pub format: RpmFormat,
+    /// The file-digest algorithm used for all regular files.
+    pub file_digest_algorithm: DigestAlgorithm,
+    /// Digest of the compressed payload.
+    pub compressed_digests: PayloadDigests,
+    /// Digest of the uncompressed archive.
+    pub archive_digests: PayloadDigests,
+    compression_flags: String,
+}
+
+/// SHA digests of one representation of an RPM payload.
+#[derive(Clone, Debug)]
+pub struct PayloadDigests {
+    /// SHA-256 digest in lowercase hexadecimal.
+    pub sha256: String,
+    /// SHA-512 digest in lowercase hexadecimal.
+    pub sha512: String,
+    /// SHA3-256 digest in lowercase hexadecimal.
+    pub sha3_256: String,
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -65,6 +125,7 @@ pub struct BuildConfig {
     compression: CompressionWithLevel,
     source_date: Option<Timestamp>,
     reserved_space: Option<u32>,
+    file_digest_algorithm: DigestAlgorithm,
 }
 
 impl From<RpmFormat> for BuildConfig {
@@ -90,6 +151,7 @@ impl BuildConfig {
             compression: CompressionWithLevel::default(),
             source_date: None,
             reserved_space: Some(SignatureHeaderBuilder::DEFAULT_RESERVED_SPACE),
+            file_digest_algorithm: DigestAlgorithm::Sha2_256,
         }
     }
 
@@ -100,6 +162,7 @@ impl BuildConfig {
             compression: CompressionWithLevel::default(),
             source_date: None,
             reserved_space: Some(SignatureHeaderBuilder::DEFAULT_RESERVED_SPACE),
+            file_digest_algorithm: DigestAlgorithm::Sha2_256,
         }
     }
 
@@ -174,6 +237,14 @@ impl BuildConfig {
         self
     }
 
+    /// Select the digest algorithm written to `RPMTAG_FILEDIGESTALGO`.
+    ///
+    /// Unsupported algorithms are rejected when the payload is built.
+    pub fn file_digest_algorithm(mut self, algorithm: DigestAlgorithm) -> Self {
+        self.file_digest_algorithm = algorithm;
+        self
+    }
+
     /// Set the amount of reserved space (in bytes) in the signature header
     /// for later adding signatures in-place (without rewriting the payload).
     ///
@@ -217,24 +288,17 @@ struct PackageTriggerEntry {
 /// Create an RPM file by specifying metadata and files using the builder pattern.
 #[derive(Default)]
 pub struct PackageBuilder {
-    config: BuildConfig,
+    staging: FileStaging,
 
     name: String,
     epoch: Option<u32>,
     version: String,
     license: String,
     arch: String,
-    uid: Option<u32>, // @todo: nothing is actually setting these or allowing setting them, they fall back to default
-    gid: Option<u32>,
     summary: String,
     desc: Option<String>,
     release: String,
 
-    // File entries need to be sorted. The entries need to be in the same order as they come
-    // in the cpio payload. Otherwise rpm will not be able to resolve those paths.
-    // key is the directory, values are complete paths
-    files: BTreeMap<String, PackageFileEntry>,
-    directories: BTreeSet<String>,
     requires: Vec<Dependency>,
     obsoletes: Vec<Dependency>,
     provides: Vec<Dependency>,
@@ -273,16 +337,6 @@ pub struct PackageBuilder {
     cookie: Option<String>,
 
     build_host: Option<String>,
-
-    /// Default ownership and permissions for regular file entries (like `%defattr` in spec files).
-    default_file_attrs: FileDefaults,
-    /// Default ownership and permissions for directory entries (like the dirmode in `%defattr`).
-    default_dir_attrs: FileDefaults,
-
-    /// Maps cpio_path -> (dev, ino, source path) for files added via `with_file()`.
-    /// Used for automatic hardlink detection on Unix platforms.
-    #[cfg(unix)]
-    source_identities: HashMap<String, (u64, u64, std::path::PathBuf)>,
 
     /// Whether `build()` or `build_and_sign()` has already been called.
     consumed: bool,
@@ -331,7 +385,7 @@ impl PackageBuilder {
     /// # }
     /// ```
     pub fn using_config(&mut self, config: impl Into<BuildConfig>) -> &mut Self {
-        self.config = config.into();
+        self.staging.config = config.into();
         self
     }
 
@@ -451,15 +505,8 @@ impl PackageBuilder {
         user: Option<String>,
         group: Option<String>,
     ) -> &mut Self {
-        if let Some(p) = permissions {
-            self.default_file_attrs.permissions = Some(p);
-        }
-        if let Some(u) = user {
-            self.default_file_attrs.user = Some(u);
-        }
-        if let Some(g) = group {
-            self.default_file_attrs.group = Some(g);
-        }
+        self.staging
+            .set_default_file_attrs(permissions, user, group);
         self
     }
 
@@ -478,15 +525,7 @@ impl PackageBuilder {
         user: Option<String>,
         group: Option<String>,
     ) -> &mut Self {
-        if let Some(p) = permissions {
-            self.default_dir_attrs.permissions = Some(p);
-        }
-        if let Some(u) = user {
-            self.default_dir_attrs.user = Some(u);
-        }
-        if let Some(g) = group {
-            self.default_dir_attrs.group = Some(g);
-        }
+        self.staging.set_default_dir_attrs(permissions, user, group);
         self
     }
 
@@ -555,48 +594,7 @@ impl PackageBuilder {
         source: impl AsRef<Path>,
         options: impl Into<FileOptions>,
     ) -> Result<&mut Self, Error> {
-        let metadata = fs::metadata(source.as_ref())?;
-        #[allow(unused_mut)]
-        let mut options = options.into();
-
-        if options.mode.file_type() != FileType::Regular {
-            return Err(Error::InvalidFileOptions {
-                method: "with_file",
-                reason: "expected regular file mode (use FileOptions::new() or .mode() with a regular file mode); use with_dir_entry() for directories or with_symlink() for symlinks",
-            });
-        }
-        if options.flag.contains(FileFlags::GHOST) {
-            return Err(Error::InvalidFileOptions {
-                method: "with_file",
-                reason: "ghost files should not have content; use with_ghost() instead",
-            });
-        }
-
-        #[cfg(unix)]
-        if options.use_default_permissions {
-            // Apply builder defaults if available, otherwise inherit from filesystem
-            let defaults = if options.mode.file_type() == FileType::Dir {
-                &self.default_dir_attrs
-            } else {
-                &self.default_file_attrs
-            };
-            if let Some(perms) = defaults.permissions {
-                options.mode.set_permissions(perms);
-            } else {
-                options.mode = FileMode::try_from(metadata.permissions().mode() as i32)
-                    .expect("OS file permissions should always be a valid mode");
-            }
-            options.use_default_permissions = false;
-        }
-        let modified_at = metadata.modified()?.try_into()?;
-        self.add_data(
-            ContentSource::Path(source.as_ref().to_path_buf()),
-            modified_at,
-            options,
-            false,
-            #[cfg(unix)]
-            Some(&metadata),
-        )?;
+        self.staging.with_file(source, options)?;
         Ok(self)
     }
 
@@ -631,29 +629,7 @@ impl PackageBuilder {
         content: impl Into<Vec<u8>>,
         options: impl Into<FileOptions>,
     ) -> Result<&mut Self, Error> {
-        let options = options.into();
-
-        if options.mode.file_type() != FileType::Regular {
-            return Err(Error::InvalidFileOptions {
-                method: "with_file_contents",
-                reason: "expected regular file mode (use FileOptions::new()); use with_dir_entry() for directories or with_symlink() for symlinks",
-            });
-        }
-        if options.flag.contains(FileFlags::GHOST) {
-            return Err(Error::InvalidFileOptions {
-                method: "with_file_contents",
-                reason: "ghost files should not have content; use with_ghost() instead",
-            });
-        }
-
-        self.add_data(
-            ContentSource::Raw(content.into()),
-            self.config.source_date.unwrap_or(Timestamp::now()),
-            options,
-            false,
-            #[cfg(unix)]
-            None,
-        )?;
+        self.staging.with_file_contents(content, options)?;
         Ok(self)
     }
 
@@ -677,23 +653,7 @@ impl PackageBuilder {
     /// # }
     /// ```
     pub fn with_dir_entry(&mut self, options: impl Into<FileOptions>) -> Result<&mut Self, Error> {
-        let options = options.into();
-
-        if options.mode.file_type() != FileType::Dir {
-            return Err(Error::InvalidFileOptions {
-                method: "with_dir_entry",
-                reason: "expected directory file mode (use FileOptions::dir())",
-            });
-        }
-
-        self.add_data(
-            ContentSource::None,
-            self.config.source_date.unwrap_or(Timestamp::now()),
-            options,
-            false,
-            #[cfg(unix)]
-            None,
-        )?;
+        self.staging.with_dir_entry(options)?;
         Ok(self)
     }
 
@@ -715,29 +675,7 @@ impl PackageBuilder {
     /// # }
     /// ```
     pub fn with_symlink(&mut self, options: impl Into<FileOptions>) -> Result<&mut Self, Error> {
-        let options = options.into();
-
-        if options.mode.file_type() != FileType::SymbolicLink {
-            return Err(Error::InvalidFileOptions {
-                method: "with_symlink",
-                reason: "expected symbolic link file mode (use FileOptions::symlink())",
-            });
-        }
-        if options.symlink.is_empty() {
-            return Err(Error::InvalidFileOptions {
-                method: "with_symlink",
-                reason: "symlink target must not be empty (use FileOptions::symlink(dest, target))",
-            });
-        }
-
-        self.add_data(
-            ContentSource::Raw(options.symlink.clone().into_bytes()),
-            self.config.source_date.unwrap_or(Timestamp::now()),
-            options,
-            false,
-            #[cfg(unix)]
-            None,
-        )?;
+        self.staging.with_symlink(options)?;
         Ok(self)
     }
 
@@ -765,23 +703,7 @@ impl PackageBuilder {
     /// # }
     /// ```
     pub fn with_ghost(&mut self, options: impl Into<FileOptions>) -> Result<&mut Self, Error> {
-        let options = options.into();
-
-        if !options.flag.contains(FileFlags::GHOST) {
-            return Err(Error::InvalidFileOptions {
-                method: "with_ghost",
-                reason: "expected ghost flag to be set (use FileOptions::ghost() or FileOptions::ghost_dir())",
-            });
-        }
-
-        self.add_data(
-            ContentSource::None,
-            self.config.source_date.unwrap_or(Timestamp::now()),
-            options,
-            false,
-            #[cfg(unix)]
-            None,
-        )?;
+        self.staging.with_ghost(options)?;
         Ok(self)
     }
 
@@ -830,272 +752,8 @@ impl PackageBuilder {
         D: AsRef<str>,
         F: Fn(FileOptionsBuilder) -> FileOptionsBuilder,
     {
-        self.add_dir_recursive(source_dir.as_ref(), dest_prefix.as_ref(), &customize)?;
+        self.staging.with_dir(source_dir, dest_prefix, customize)?;
         Ok(self)
-    }
-
-    fn add_dir_recursive<F>(
-        &mut self,
-        source_dir: &Path,
-        dest_prefix: &str,
-        customize: &F,
-    ) -> Result<(), Error>
-    where
-        F: Fn(FileOptionsBuilder) -> FileOptionsBuilder,
-    {
-        // Add the directory entry itself
-        #[allow(unused_mut)]
-        let mut dir_options: FileOptions = customize(FileOptions::dir(dest_prefix)).into();
-        #[cfg(unix)]
-        if dir_options.use_default_permissions {
-            if let Some(perms) = self.default_dir_attrs.permissions {
-                dir_options.mode.set_permissions(perms);
-            } else {
-                let dir_metadata = source_dir.symlink_metadata()?;
-                dir_options.mode = FileMode::try_from(dir_metadata.permissions().mode() as i32)
-                    .expect("OS file permissions should always be a valid mode");
-            }
-            dir_options.use_default_permissions = false;
-        }
-        self.add_data(
-            ContentSource::None,
-            self.config.source_date.unwrap_or(Timestamp::now()),
-            dir_options,
-            true,
-            #[cfg(unix)]
-            None,
-        )?;
-
-        for entry in fs::read_dir(source_dir)? {
-            let entry = entry?;
-            let file_name = entry.file_name();
-            let file_name_str = file_name.to_string_lossy();
-            let dest = format!("{}/{}", dest_prefix, file_name_str);
-            // Use symlink_metadata (lstat) so we don't follow symlinks
-            let metadata = entry.path().symlink_metadata()?;
-            let file_type = metadata.file_type();
-
-            if file_type.is_dir() {
-                self.add_dir_recursive(&entry.path(), &dest, customize)?;
-            } else if file_type.is_symlink() {
-                let link_target = fs::read_link(entry.path())?;
-                let options = customize(FileOptions::symlink(&dest, link_target.to_string_lossy()));
-                self.add_data(
-                    ContentSource::None,
-                    self.config.source_date.unwrap_or(Timestamp::now()),
-                    options.into(),
-                    true,
-                    #[cfg(unix)]
-                    None,
-                )?;
-            } else {
-                let modified_at: Timestamp = metadata.modified()?.try_into()?;
-                #[allow(unused_mut)]
-                let mut options: FileOptions = customize(FileOptions::new(&dest)).into();
-
-                #[cfg(unix)]
-                if options.use_default_permissions {
-                    if let Some(perms) = self.default_file_attrs.permissions {
-                        options.mode.set_permissions(perms);
-                    } else {
-                        options.mode = FileMode::try_from(metadata.permissions().mode() as i32)
-                            .expect("OS file permissions should always be a valid mode");
-                    }
-                    options.use_default_permissions = false;
-                }
-
-                self.add_data(
-                    ContentSource::Path(entry.path()),
-                    modified_at,
-                    options,
-                    true,
-                    #[cfg(unix)]
-                    Some(&metadata),
-                )?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn add_data(
-        &mut self,
-        content_source: ContentSource,
-        modified_at: Timestamp,
-        mut options: FileOptions,
-        bulk: bool,
-        #[cfg(unix)] source_metadata: Option<&fs::Metadata>,
-    ) -> Result<(), Error> {
-        let modified_at = options.modified_at.unwrap_or(modified_at);
-
-        // Apply builder-level defaults for ownership and permissions where
-        // the FileOptions hasn't been explicitly overridden.
-        let defaults = if options.mode.file_type() == FileType::Dir {
-            &self.default_dir_attrs
-        } else {
-            &self.default_file_attrs
-        };
-        if options.user.is_none() {
-            options.user = Some(defaults.user.clone().unwrap_or_else(|| "root".to_string()));
-        }
-        if options.group.is_none() {
-            options.group = Some(defaults.group.clone().unwrap_or_else(|| "root".to_string()));
-        }
-        if options.use_default_permissions
-            && let Some(perms) = defaults.permissions
-        {
-            options.mode.set_permissions(perms);
-        }
-
-        if options.hardlink_identity.as_deref() == Some("") {
-            return Err(Error::InvalidFileOptions {
-                method: "FileOptionsBuilder::hardlink",
-                reason: "hardlink identity must not be empty",
-            });
-        }
-        if options.hardlink_identity.is_some()
-            && (options.mode.file_type() != FileType::Regular
-                || options.flag.contains(FileFlags::GHOST))
-        {
-            return Err(Error::InvalidFileOptions {
-                method: "FileOptionsBuilder::hardlink",
-                reason: "hardlink identity is only valid for non-ghost regular files",
-            });
-        }
-
-        let dest = options.destination;
-        if !dest.starts_with("./") && !dest.starts_with('/') {
-            return Err(Error::InvalidDestinationPath {
-                path: dest,
-                desc: "invalid start, expected / or ./",
-            });
-        }
-        if dest == "/" || dest == "./" {
-            return Err(Error::InvalidDestinationPath {
-                path: dest,
-                desc: "cannot package the root directory itself",
-            });
-        }
-
-        // Normalize the path: collapse repeated slashes and remove trailing slashes.
-        // This prevents entries like "/usr//bin/foo" and "/usr/bin/foo" from being
-        // treated as distinct, and "/var/log/myapp/" from failing to split into
-        // dir + basename correctly.
-        let normalized = super::util::normalize_path(&dest);
-
-        let pb = PathBuf::from(normalized.clone());
-
-        let parent = pb.parent().ok_or_else(|| Error::InvalidDestinationPath {
-            path: normalized.clone(),
-            desc: "no parent directory found",
-        })?;
-
-        let root_child = matches!(parent.to_str(), Some("/" | "."));
-        let (cpio_path, dir) = if normalized.starts_with('.') {
-            (
-                normalized.to_string(),
-                // strip_prefix() should never fail because we've checked the special cases already
-                if root_child {
-                    "/".to_string()
-                } else {
-                    format!("/{}/", parent.strip_prefix(".").unwrap().to_string_lossy())
-                },
-            )
-        } else {
-            (
-                format!(".{}", normalized),
-                if root_child {
-                    "/".to_string()
-                } else {
-                    format!("{}/", parent.to_string_lossy())
-                },
-            )
-        };
-
-        // Directories cannot carry %config, %doc, or %license attributes in RPM.
-        // These flags are silently stripped rather than rejected, as this matches RPM behavior.
-        if options.mode.file_type() == FileType::Dir {
-            options
-                .flag
-                .remove(FileFlags::CONFIG | FileFlags::DOC | FileFlags::LICENSE);
-        }
-
-        if let Some(existing) = self.files.get(&cpio_path) {
-            if bulk {
-                // Bulk operations skip entries that were already added (either explicitly
-                // or by a previous bulk operation). This allows explicit with_file() calls
-                // to take precedence regardless of ordering.
-                //
-                // NOTE: when two bulk operations overlap (e.g. with_dir for "/etc"
-                // then with_dir for "/etc/myapp" with different options), the first
-                // bulk add wins. If we need more sophisticated merging (e.g. a more-specific
-                // bulk operation overriding a less-specific one), that would require tracking
-                // additional provenance such as the depth or specificity of the bulk source.
-                return Ok(());
-            }
-            if !existing.bulk_added {
-                // Two explicit adds of the same path is an error.
-                return Err(Error::InvalidDestinationPath {
-                    path: normalized,
-                    desc: "duplicate file entry; the same path was added to the package twice",
-                });
-            }
-            // An explicit add replaces a bulk-added entry (fall through to insert below).
-        }
-
-        // Populate source_identities for automatic hardlink detection on Unix.
-        // Only track files without explicit hardlink_identity to avoid conflicts.
-        // Check BEFORE moving hardlink_identity into the entry.
-        #[cfg(unix)]
-        let should_track_identity =
-            source_metadata.is_some() && options.hardlink_identity.is_none();
-
-        #[cfg(unix)]
-        let source_path = match &content_source {
-            ContentSource::Path(path) if should_track_identity => Some(fs::canonicalize(path)?),
-            _ => None,
-        };
-
-        // An explicit entry can replace a bulk-added entry. Remove the old source
-        // identity so automatic detection reflects the replacement entry.
-        #[cfg(unix)]
-        self.source_identities.remove(&cpio_path);
-
-        let entry = PackageFileEntry {
-            // file_name() should never fail because we've checked the special cases already
-            base_name: pb.file_name().unwrap().to_string_lossy().to_string(),
-            source: content_source,
-            flags: options.flag,
-            user: options.user.expect("user should be resolved by now"),
-            group: options.group.expect("group should be resolved by now"),
-            mode: options.mode,
-            link: options.symlink,
-            modified_at,
-            dir: dir.clone(),
-            caps: options.caps,
-            verify_flags: options.verify_flags,
-            hardlink_identity: options.hardlink_identity,
-            bulk_added: bulk,
-        };
-
-        self.directories.insert(dir);
-
-        #[cfg(unix)]
-        if should_track_identity {
-            use std::os::unix::fs::MetadataExt;
-            let meta = source_metadata.unwrap(); // Safe because we checked is_some() above
-            self.source_identities.insert(
-                cpio_path.clone(),
-                (
-                    meta.dev(),
-                    meta.ino(),
-                    source_path.expect("tracked source path"),
-                ),
-            );
-        }
-
-        self.files.insert(cpio_path, entry);
-        Ok(())
     }
 
     /// Set a script to be executed just before the package is installed or upgraded.
@@ -1477,8 +1135,8 @@ impl PackageBuilder {
 
     /// Build the package
     pub fn build(&mut self) -> Result<Package, Error> {
-        let fmt = self.config.format;
-        let reserved_space: Option<u32> = self.config.reserved_space;
+        let fmt = self.staging.config.format;
+        let reserved_space: Option<u32> = self.staging.config.reserved_space;
         if self.consumed {
             return Err(Error::BuilderReuse);
         }
@@ -1520,99 +1178,12 @@ impl PackageBuilder {
     /// intended for applications such as tarpm which preserve or construct
     /// the remaining header records independently.
     pub fn build_payload(&mut self) -> Result<PayloadBuildResult, Error> {
-        let package = self.build()?;
-        let entries = package
-            .metadata
-            .header
-            .get_all_entries()?
-            .into_iter()
-            .map(|(tag, data)| HeaderEntry::new(tag, data))
-            .collect::<Vec<_>>();
-        let file_tags = [
-            IndexTag::RPMTAG_FILESIZES as u32,
-            IndexTag::RPMTAG_LONGFILESIZES as u32,
-            IndexTag::RPMTAG_FILEMODES as u32,
-            IndexTag::RPMTAG_FILERDEVS as u32,
-            IndexTag::RPMTAG_FILEMTIMES as u32,
-            IndexTag::RPMTAG_FILEDIGESTS as u32,
-            IndexTag::RPMTAG_FILELINKTOS as u32,
-            IndexTag::RPMTAG_FILEFLAGS as u32,
-            IndexTag::RPMTAG_FILEUSERNAME as u32,
-            IndexTag::RPMTAG_FILEGROUPNAME as u32,
-            IndexTag::RPMTAG_FILEDEVICES as u32,
-            IndexTag::RPMTAG_FILEINODES as u32,
-            IndexTag::RPMTAG_DIRINDEXES as u32,
-            IndexTag::RPMTAG_FILELANGS as u32,
-            IndexTag::RPMTAG_FILEVERIFYFLAGS as u32,
-            IndexTag::RPMTAG_BASENAMES as u32,
-            IndexTag::RPMTAG_DIRNAMES as u32,
-            IndexTag::RPMTAG_FILECAPS as u32,
-        ];
-        let payload_tags = [
-            IndexTag::RPMTAG_PAYLOADSHA256 as u32,
-            IndexTag::RPMTAG_PAYLOADSHA256ALT as u32,
-            IndexTag::RPMTAG_PAYLOAD_SHA3_256 as u32,
-            IndexTag::RPMTAG_PAYLOAD_SHA3_256_ALT as u32,
-            IndexTag::RPMTAG_PAYLOAD_SHA512 as u32,
-            IndexTag::RPMTAG_PAYLOAD_SHA512_ALT as u32,
-            IndexTag::RPMTAG_PAYLOADSIZE as u32,
-            IndexTag::RPMTAG_PAYLOADSIZEALT as u32,
-            IndexTag::RPMTAG_PAYLOADCOMPRESSOR as u32,
-            IndexTag::RPMTAG_PAYLOADFLAGS as u32,
-        ];
-        let file_metadata = entries
-            .iter()
-            .filter(|entry| file_tags.contains(&entry.tag))
-            .cloned()
-            .collect();
-        let payload_digests = entries
-            .iter()
-            .filter(|entry| payload_tags.contains(&entry.tag))
-            .cloned()
-            .collect();
-
-        let file_entries = package.metadata.get_file_entries()?;
-        let devices = package
-            .metadata
-            .header
-            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEDEVICES)
-            .unwrap_or_default();
-        let inodes = package
-            .metadata
-            .header
-            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEINODES)
-            .unwrap_or_default();
-        let hardlinks = hardlink_paths_by_identity(&file_entries, &devices, &inodes);
-        let archive_size = package
-            .metadata
-            .header
-            .get_entry_data_as_u64(IndexTag::RPMTAG_PAYLOADSIZEALT)
-            .or_else(|_| -> Result<u64, Error> {
-                package
-                    .metadata
-                    .header
-                    .get_entry_data_as_u32(IndexTag::RPMTAG_PAYLOADSIZEALT)
-                    .map(u64::from)
-            })
-            .or_else(|_| -> Result<u64, Error> {
-                let mut archive = crate::decompress_stream(std::io::Cursor::new(&package.payload))?;
-                let mut bytes = Vec::new();
-                archive.read_to_end(&mut bytes)?;
-                Ok(bytes.len() as u64)
-            })?;
-        let installed_size = package.metadata.get_installed_size()?;
-        let compression = package.metadata.get_payload_compressor()?;
-        let header = package.metadata.header;
-        Ok(PayloadBuildResult {
-            compressed_payload: package.payload,
-            header,
-            file_metadata,
-            installed_size,
-            archive_size,
-            compression,
-            payload_digests,
-            hardlinks,
-        })
+        if self.consumed {
+            return Err(Error::BuilderReuse);
+        }
+        let mut builder = std::mem::take(self);
+        self.consumed = true;
+        builder.staging.prepare_payload()
     }
 
     /// Build the package and sign it with the provided signer
@@ -1626,7 +1197,7 @@ impl PackageBuilder {
     where
         S: signature::Signing<Signature = Vec<u8>>,
     {
-        let source_date = self.config.source_date;
+        let source_date = self.staging.config.source_date;
         let now = Timestamp::now();
         let signature_timestamp = match source_date {
             Some(source_date_epoch) if source_date_epoch < now => source_date_epoch,
@@ -1679,12 +1250,7 @@ impl PackageBuilder {
         if let Some(ref group) = self.group {
             reject_control_chars("group", group)?;
         }
-        for (path, entry) in &self.files {
-            reject_control_chars("file path", path)?;
-            reject_control_chars("file user", &entry.user)?;
-            reject_control_chars("file group", &entry.group)?;
-            reject_control_chars("file symlink target", &entry.link)?;
-        }
+        self.staging.validate_file_metadata()?;
         for name in &self.changelog_names {
             reject_control_chars("changelog name", name)?;
         }
@@ -1714,172 +1280,32 @@ impl PackageBuilder {
     fn prepare_data(mut self) -> Result<(Lead, Header<IndexTag>, Vec<u8>), Error> {
         self.pre_build_validation()?;
 
-        // Build the hardlink plan from explicit declarations and automatic detection.
-        #[allow(unused_mut)]
-        let mut hardlinks = hardlinks::Plan::from_explicit_declarations(&self.files)?;
-
-        #[cfg(unix)]
-        hardlinks.add_filesystem_identities(&self.source_identities, &self.files)?;
-
-        // signature depends on header and payload. So we build these two first.
-        // then the signature. Then we stitch all together.
-        // Lead is not important. just build it here
-
+        // The payload is prepared once, then its derived file and digest tags
+        // are combined with the ordinary package metadata below.
         let lead = Lead::new(&self.name);
-
-        // Calculate the sha256 of the archive as we write it into the compressor, so that we don't
-        // need to keep two copies in memory simultaneously.
-        let mut compressor: Compressor = self.config.compression.try_into()?;
-        let mut archive = ChecksummingWriter::new(
-            &mut compressor,
-            &[HashKind::Sha256, HashKind::Sha512, HashKind::Sha3_256],
-        );
-
-        let mut ino_index = 1;
-
-        let files_len = self.files.len();
-        let mut file_sizes = Vec::with_capacity(files_len);
-        let mut file_modes = Vec::with_capacity(files_len);
-        let mut file_caps = Vec::with_capacity(files_len);
-        let mut file_rdevs = Vec::with_capacity(files_len);
-        let mut file_mtimes = Vec::with_capacity(files_len);
-        let mut file_hashes = Vec::with_capacity(files_len);
-        let mut file_linktos = Vec::with_capacity(files_len);
-        let mut file_flags = Vec::with_capacity(files_len);
-        let mut file_usernames = Vec::with_capacity(files_len);
-        let mut file_groupnames = Vec::with_capacity(files_len);
-        let mut file_devices = Vec::with_capacity(files_len);
-        let mut file_inodes = Vec::with_capacity(files_len);
-        let mut file_langs = Vec::with_capacity(files_len);
-        let mut file_verify_flags = Vec::with_capacity(files_len);
-        let mut dir_indixes = Vec::with_capacity(files_len);
-        let mut base_names = Vec::with_capacity(files_len);
-        let mut users_to_create = HashSet::new();
-        let mut groups_to_create = HashSet::new();
-        let mut resolved_mtimes = Vec::with_capacity(files_len);
-
-        let mut uses_file_capabilities = false;
-        let combined_file_sizes = hardlinks.installed_size(&self.files)?;
-
+        let built = self.staging.prepare_payload()?;
+        let files_len = built.files.len();
+        let combined_file_sizes = built.installed_size;
         let uses_large_files =
-            combined_file_sizes > u32::MAX.into() || self.config.format != RpmFormat::V4;
-
-        // Entries are sorted by path (BTreeMap iteration order) and duplicates are rejected
-        // in add_data(). Paths are also normalized there (collapsing slashes, stripping trailing
-        // slashes) to ensure deduplication works correctly.
-        for (cpio_path, entry) in self.files.iter_mut() {
-            if entry.caps.is_some() {
-                uses_file_capabilities = true;
-            }
-            if &entry.user != "root" {
-                users_to_create.insert(entry.user.clone());
-            }
-            if &entry.group != "root" {
-                groups_to_create.insert(entry.group.clone());
-            }
-            let is_ghost = entry.flags.contains(FileFlags::GHOST);
-            // Ghost files should report size 0 in headers since they have no payload content
-            let file_size = entry.source.size()?;
-            file_sizes.push(file_size);
-            file_modes.push(entry.mode.into());
-            file_caps.push(entry.caps.to_owned());
-            // The device ID that this file *represents* (st_rdev).
-            // Only meaningful for block/character device special files; always 0 otherwise.
-            file_rdevs.push(0);
-            // The device ID of the filesystem *containing* the file (st_dev), normalized to 1 or 0.
-            // Ghost files have no backing file, so their st_dev is 0.
-            file_devices.push(if is_ghost { 0 } else { 1 });
-            let mtime = match self.config.source_date {
-                Some(d) if d < entry.modified_at => d,
-                _ => entry.modified_at,
-            };
-            file_mtimes.push(mtime.into());
-            resolved_mtimes.push(mtime);
-            file_linktos.push(entry.link.to_owned());
-            file_flags.push(entry.flags.bits());
-            file_usernames.push(entry.user.to_owned());
-            file_groupnames.push(entry.group.to_owned());
-            let inode = hardlinks
-                .member(cpio_path)
-                .map_or(ino_index, |member| member.inode);
-            file_inodes.push(inode);
-            file_langs.push("".to_string());
-            // safe because indexes cannot change after this as the RpmBuilder is consumed
-            // the dir is guaranteed to be there - or else there is a logic error
-            let index = self
-                .directories
-                .iter()
-                .position(|d| d == &entry.dir)
-                .unwrap();
-            dir_indixes.push(index as u32);
-            base_names.push(entry.base_name.to_owned());
-            // Ghost files have certain verify flags cleared
-            let verify = if is_ghost {
-                entry.verify_flags
-                    & !(FileVerifyFlags::FILEDIGEST
-                        | FileVerifyFlags::FILESIZE
-                        | FileVerifyFlags::LINKTO
-                        | FileVerifyFlags::MTIME)
-            } else {
-                entry.verify_flags
-            };
-            file_verify_flags.push(verify.bits());
-
-            // Ghost files are not included in the CPIO payload and have no digest.
-            // Non-regular files (dirs, symlinks) also have empty digests per RPM convention.
-            if is_ghost {
-                file_hashes.push(String::new());
-                ino_index += 1;
-                continue;
-            }
-
-            // Only regular files have digests; dirs and symlinks get empty strings.
-            // Content is written in a second phase so hardlink sets can follow RPM's
-            // archive ordering and carry bytes only on their completing member.
-            if entry.mode.file_type() == FileType::Regular {
-                let mut sink = io::sink();
-                let mut hash_writer = ChecksummingWriter::new(&mut sink, &[HashKind::Sha256]);
-                io::copy(&mut entry.source.try_into_bufread()?, &mut hash_writer)?;
-                let hash_value_map = hash_writer.into_digests().0;
-                if let Some(hash_value) = hash_value_map.get(&HashKind::Sha256) {
-                    file_hashes.push(hash_value.to_string());
-                }
-            } else {
-                file_hashes.push(String::new());
-            }
-            ino_index += 1;
-        }
-
-        let file_keys = self.files.keys().cloned().collect::<Vec<_>>();
-        for cpio_path in hardlinks.payload_order(&self.files) {
-            let file_index = file_keys
-                .binary_search(&cpio_path)
-                .expect("payload path came from sorted package file map");
-            let entry = &self.files[&cpio_path];
-            let member = hardlinks.member(&cpio_path);
-            let payload_size = if member.is_none_or(|member| member.has_content) {
-                entry.source.size()?
-            } else {
-                0
-            };
-            let mut writer = if !uses_large_files {
-                payload::Builder::new(&cpio_path)
-                    .mode(entry.mode.into())
-                    .ino(member.map_or(file_inodes[file_index], |member| member.inode))
-                    .nlink(member.map_or(1, |member| member.link_count))
-                    .mtime(resolved_mtimes[file_index].into())
-                    .uid(self.uid.unwrap_or(0))
-                    .gid(self.gid.unwrap_or(0))
-                    .write_cpio(&mut archive, payload_size as u32)
-            } else {
-                payload::write_stripped_cpio(&mut archive, file_index as u32, payload_size)
-            };
-            if payload_size > 0 {
-                io::copy(&mut entry.source.try_into_bufread()?, &mut writer)?;
-            }
-            writer.finish()?;
-        }
-        payload::trailer(&mut archive)?;
+            combined_file_sizes > u32::MAX as u64 || self.staging.config.format != RpmFormat::V4;
+        let uses_file_capabilities = built.files.iter().any(|file| file.caps.is_some());
+        let file_flags = built
+            .files
+            .iter()
+            .map(|file| file.flags.bits())
+            .collect::<Vec<_>>();
+        let users_to_create = built
+            .files
+            .iter()
+            .filter(|file| file.user != "root")
+            .map(|file| file.user.clone())
+            .collect::<HashSet<_>>();
+        let groups_to_create = built
+            .files
+            .iter()
+            .filter(|file| file.group != "root")
+            .map(|file| file.group.clone())
+            .collect::<HashSet<_>>();
 
         // Auto-provide version uses EVR format: [epoch:]version-release
         let epoch_str = self.epoch.map(|e| e.to_string()).unwrap_or_default();
@@ -1899,7 +1325,7 @@ impl PackageBuilder {
             self.requires.push(Dependency::config(&self.name, &evr));
         }
 
-        if self.config.format == RpmFormat::V4 {
+        if self.staging.config.format == RpmFormat::V4 {
             self.requires
                 .push(Dependency::rpmlib("CompressedFileNames", "3.0.4-1"));
 
@@ -1910,7 +1336,7 @@ impl PackageBuilder {
                 .push(Dependency::rpmlib("PayloadFilesHavePrefix", "4.0-1"));
         }
 
-        if self.config.compression.compression_type() == CompressionType::Zstd {
+        if self.staging.config.compression.compression_type() == CompressionType::Zstd {
             self.requires
                 .push(Dependency::rpmlib("PayloadIsZstd", "5.4.18-1"));
         }
@@ -1920,7 +1346,7 @@ impl PackageBuilder {
                 .push(Dependency::rpmlib("FileCaps", "4.6.1-1".to_owned()));
         }
 
-        if uses_large_files && !self.files.is_empty() {
+        if uses_large_files && !self.staging.files.is_empty() {
             self.requires
                 .push(Dependency::rpmlib("LargeFiles", "4.12.0-1".to_owned()));
         }
@@ -1946,7 +1372,7 @@ impl PackageBuilder {
         // user() and group() virtual provides require RPM >= 4.19 (sysusers support).
         // V4 RPMs may target older distros, so use Recommends there for compatibility.
         for user in &users_to_create {
-            if self.config.format == RpmFormat::V6 {
+            if self.staging.config.format == RpmFormat::V6 {
                 self.requires.push(Dependency::user(user));
             } else {
                 self.recommends.push(Dependency::user(user));
@@ -1954,7 +1380,7 @@ impl PackageBuilder {
         }
 
         for group in &groups_to_create {
-            if self.config.format == RpmFormat::V6 {
+            if self.staging.config.format == RpmFormat::V6 {
                 self.requires.push(Dependency::group(group));
             } else {
                 self.recommends.push(Dependency::group(group));
@@ -1974,7 +1400,7 @@ impl PackageBuilder {
         // mapping can later record which file generated each dependency.
         // dep_type is b'P' for provides or b'R' for requires.
         let mut file_deps: Vec<(usize, u8, Dependency)> = Vec::new();
-        for (file_index, (path, entry)) in self.files.iter().enumerate() {
+        for (file_index, (path, entry)) in self.staging.files.iter().enumerate() {
             if !path.starts_with("./usr/lib/sysusers.d/") || !path.ends_with(".conf") {
                 continue;
             }
@@ -2246,7 +1672,7 @@ impl PackageBuilder {
         }
 
         // Compute SOURCENEVR for v6 packages (do it early because the values get moved)
-        let source_nevr = if self.config.format == RpmFormat::V6 {
+        let source_nevr = if self.staging.config.format == RpmFormat::V6 {
             Some(if let Some(epoch_val) = self.epoch {
                 format!(
                     "{}-{}:{}-{}",
@@ -2286,20 +1712,6 @@ impl PackageBuilder {
                 IndexTag::RPMTAG_SUMMARY,
                 IndexData::I18NString(vec![self.summary]),
             ),
-            if uses_large_files {
-                IndexEntry::new(
-                    IndexTag::RPMTAG_LONGSIZE,
-                    IndexData::Int64(vec![combined_file_sizes]),
-                )
-            } else {
-                let combined_file_sizes = combined_file_sizes
-                    .try_into()
-                    .expect("combined_file_sizes should be smaller than 4 GiB");
-                IndexEntry::new(
-                    IndexTag::RPMTAG_SIZE,
-                    IndexData::Int32(vec![combined_file_sizes]),
-                )
-            },
             IndexEntry::new(IndexTag::RPMTAG_LICENSE, IndexData::StringTag(self.license)),
             IndexEntry::new(
                 IndexTag::RPMTAG_OS,
@@ -2335,7 +1747,7 @@ impl PackageBuilder {
         }
 
         let now = Timestamp::now();
-        let build_time = match self.config.source_date {
+        let build_time = match self.staging.config.source_date {
             Some(t) if t < now => t,
             _ => now,
         };
@@ -2351,84 +1763,12 @@ impl PackageBuilder {
             ));
         }
 
-        // if we have an empty RPM, we have to leave out all file related index entries.
-        if !self.files.is_empty() {
-            let size_entry = if uses_large_files {
-                IndexEntry::new(IndexTag::RPMTAG_LONGFILESIZES, IndexData::Int64(file_sizes))
-            } else {
-                let file_sizes = file_sizes
-                    .into_iter()
-                    .map(u32::try_from)
-                    .collect::<Result<_, _>>()
-                    .expect(
-                        "combined_file_sizes and thus all file sizes \
-                         should be smaller than 4 GiB",
-                    );
-                IndexEntry::new(IndexTag::RPMTAG_FILESIZES, IndexData::Int32(file_sizes))
-            };
-            actual_records.extend([
-                size_entry,
-                IndexEntry::new(IndexTag::RPMTAG_FILEMODES, IndexData::Int16(file_modes)),
-                IndexEntry::new(IndexTag::RPMTAG_FILERDEVS, IndexData::Int16(file_rdevs)),
-                IndexEntry::new(IndexTag::RPMTAG_FILEMTIMES, IndexData::Int32(file_mtimes)),
-                IndexEntry::new(
-                    IndexTag::RPMTAG_FILEDIGESTS,
-                    IndexData::StringArray(file_hashes),
-                ),
-                IndexEntry::new(
-                    IndexTag::RPMTAG_FILELINKTOS,
-                    IndexData::StringArray(file_linktos),
-                ),
-                IndexEntry::new(IndexTag::RPMTAG_FILEFLAGS, IndexData::Int32(file_flags)),
-                IndexEntry::new(
-                    IndexTag::RPMTAG_FILEUSERNAME,
-                    IndexData::StringArray(file_usernames),
-                ),
-                IndexEntry::new(
-                    IndexTag::RPMTAG_FILEGROUPNAME,
-                    IndexData::StringArray(file_groupnames),
-                ),
-                IndexEntry::new(IndexTag::RPMTAG_FILEDEVICES, IndexData::Int32(file_devices)),
-                IndexEntry::new(IndexTag::RPMTAG_FILEINODES, IndexData::Int32(file_inodes)),
-                IndexEntry::new(IndexTag::RPMTAG_DIRINDEXES, IndexData::Int32(dir_indixes)),
-                IndexEntry::new(
-                    IndexTag::RPMTAG_FILELANGS,
-                    IndexData::StringArray(file_langs),
-                ),
-                IndexEntry::new(
-                    IndexTag::RPMTAG_FILEVERIFYFLAGS,
-                    IndexData::Int32(file_verify_flags),
-                ),
-                IndexEntry::new(
-                    IndexTag::RPMTAG_BASENAMES,
-                    IndexData::StringArray(base_names),
-                ),
-                IndexEntry::new(
-                    IndexTag::RPMTAG_DIRNAMES,
-                    IndexData::StringArray(self.directories.into_iter().collect()),
-                ),
-            ]);
-            if file_caps.iter().any(|caps| caps.is_some()) {
-                actual_records.extend([IndexEntry::new(
-                    IndexTag::RPMTAG_FILECAPS,
-                    IndexData::StringArray(
-                        file_caps
-                            .iter()
-                            .map(|f| match f {
-                                Some(caps) => caps.to_string(),
-                                None => "".to_string(),
-                            })
-                            .collect::<Vec<String>>(),
-                    ),
-                )])
-            }
-        }
-
-        // RPM always adds this tag, even if the package has no files. We will do the same.
-        actual_records.push(IndexEntry::new(
-            IndexTag::RPMTAG_FILEDIGESTALGO,
-            IndexData::Int32(vec![DigestAlgorithm::Sha2_256 as u32]),
-        ));
+        actual_records.extend(
+            built
+                .file_header_entries()
+                .into_iter()
+                .map(|entry| IndexEntry::new_raw(entry.tag, entry.data)),
+        );
 
         actual_records.extend([
             IndexEntry::new(
@@ -2459,114 +1799,18 @@ impl PackageBuilder {
             ]);
         }
 
-        // digest of the uncompressed raw archive calculated on the inner writer
-        let (hash_values, raw_archive_size) = archive.into_digests();
-        let payload = compressor.finish_compression()?;
-
-        // digest of the post-compression archive (payload)
-        let payload_sha256 = {
-            let mut hasher = sha2::Sha256::default();
-            hasher.update(payload.as_slice());
-            hex::encode(hasher.finalize())
-        };
-
-        let payload_sha512 = {
-            let mut hasher = sha2::Sha512::default();
-            hasher.update(payload.as_slice());
-            hex::encode(hasher.finalize())
-        };
-
-        let payload_sha3_256 = {
-            let mut hasher = sha3::Sha3_256::default();
-            hasher.update(payload.as_slice());
-            hex::encode(hasher.finalize())
-        };
-
-        if let Some(raw_archive_sha256) = hash_values.get(&HashKind::Sha256) {
-            // RPM uses array types for RPMTAG_PAYLOADSHA256 and friends, but switched to string types when
-            // adding new payload checksum types.
-            actual_records.extend([
-                IndexEntry::new(
-                    IndexTag::RPMTAG_PAYLOADSHA256,
-                    IndexData::StringArray(vec![payload_sha256]),
-                ),
-                IndexEntry::new(
-                    IndexTag::RPMTAG_PAYLOADSHA256ALT,
-                    IndexData::StringArray(vec![raw_archive_sha256.to_string()]),
-                ),
-            ]);
-            // PAYLOADSHA256ALGO is obsolete and not used in v6 packages
-            if self.config.format == RpmFormat::V4 {
-                actual_records.push(IndexEntry::new(
-                    IndexTag::RPMTAG_PAYLOADSHA256ALGO,
-                    IndexData::Int32(vec![DigestAlgorithm::Sha2_256 as u32]),
-                ));
-            }
-        }
-
-        if self.config.format == RpmFormat::V6 {
-            if let Some(nevr) = source_nevr {
-                actual_records.push(IndexEntry::new(
-                    IndexTag::RPMTAG_SOURCENEVR,
-                    IndexData::StringTag(nevr),
-                ));
-            }
-            actual_records.extend([
-                IndexEntry::new(IndexTag::RPMTAG_RPMFORMAT, IndexData::Int32(vec![6])),
-                IndexEntry::new(
-                    IndexTag::RPMTAG_PAYLOADSIZE,
-                    IndexData::Int64(vec![payload.len() as u64]),
-                ),
-                IndexEntry::new(
-                    IndexTag::RPMTAG_PAYLOADSIZEALT,
-                    IndexData::Int64(vec![raw_archive_size as u64]),
-                ),
-            ]);
-            if let Some(raw_archive_sha3_256) = hash_values.get(&HashKind::Sha3_256) {
-                actual_records.extend([
-                    IndexEntry::new(
-                        IndexTag::RPMTAG_PAYLOAD_SHA3_256,
-                        IndexData::StringTag(payload_sha3_256),
-                    ),
-                    IndexEntry::new(
-                        IndexTag::RPMTAG_PAYLOAD_SHA3_256_ALT,
-                        IndexData::StringTag(raw_archive_sha3_256.to_string()),
-                    ),
-                ]);
-            }
-            if let Some(raw_archive_sha512) = hash_values.get(&HashKind::Sha512) {
-                actual_records.extend([
-                    IndexEntry::new(
-                        IndexTag::RPMTAG_PAYLOAD_SHA512,
-                        IndexData::StringTag(payload_sha512),
-                    ),
-                    IndexEntry::new(
-                        IndexTag::RPMTAG_PAYLOAD_SHA512_ALT,
-                        IndexData::StringTag(raw_archive_sha512.to_string()),
-                    ),
-                ]);
-            }
-        }
-
-        // RPM always writes payloadflags unconditionally. That is a little silly, but we will do the same
-        let (compression_name, compression_flags) = match self.config.compression {
-            CompressionWithLevel::None => (None, String::new()),
-            CompressionWithLevel::Gzip(level) => (Some("gzip".to_owned()), level.to_string()),
-            CompressionWithLevel::Zstd(level) => (Some("zstd".to_owned()), level.to_string()),
-            CompressionWithLevel::Xz(level) => (Some("xz".to_owned()), level.to_string()),
-            CompressionWithLevel::Bzip2(level) => (Some("bzip2".to_owned()), level.to_string()),
-        };
-
-        if let Some(compression_name) = compression_name {
+        if let Some(nevr) = source_nevr {
             actual_records.push(IndexEntry::new(
-                IndexTag::RPMTAG_PAYLOADCOMPRESSOR,
-                IndexData::StringTag(compression_name),
+                IndexTag::RPMTAG_SOURCENEVR,
+                IndexData::StringTag(nevr),
             ));
         }
-        actual_records.push(IndexEntry::new(
-            IndexTag::RPMTAG_PAYLOADFLAGS,
-            IndexData::StringTag(compression_flags),
-        ));
+        actual_records.extend(
+            built
+                .payload_header_entries()
+                .into_iter()
+                .map(|entry| IndexEntry::new_raw(entry.tag, entry.data)),
+        );
 
         if !self.changelog_names.is_empty() {
             actual_records.push(IndexEntry::new(
@@ -2795,89 +2039,7 @@ impl PackageBuilder {
 
         let header = Header::from_index_entries(actual_records, IndexTag::RPMTAG_HEADERIMMUTABLE);
 
-        Ok((lead, header, payload))
-    }
-}
-
-/// Group regular, non-ghost file paths by the RPM device and inode identity.
-fn hardlink_paths_by_identity(
-    file_entries: &[FileEntry<'_>],
-    devices: &[u32],
-    inodes: &[u32],
-) -> Vec<Vec<String>> {
-    let mut paths_by_identity: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
-    for ((entry, device), inode) in file_entries
-        .iter()
-        .zip(devices.iter().copied())
-        .zip(inodes.iter().copied())
-    {
-        if entry.file_type() != FileType::Regular || entry.flags().contains(FileFlags::GHOST) {
-            continue;
-        }
-        paths_by_identity
-            .entry((device, inode))
-            .or_default()
-            .push(entry.path().to_string_lossy().into_owned());
-    }
-    paths_by_identity
-        .into_values()
-        .filter(|paths| paths.len() > 1)
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::borrow::Cow;
-
-    fn file_entry(name: &'static str, mode: FileMode, flags: FileFlags) -> FileEntry<'static> {
-        FileEntry {
-            dirname: Cow::Borrowed("/"),
-            basename: Cow::Borrowed(name),
-            mode,
-            user: Cow::Borrowed("root"),
-            group: Cow::Borrowed("root"),
-            modified_at: Timestamp(0),
-            size: 0,
-            flags,
-            digest: None,
-            caps: None,
-            linkto: None,
-            ima_signature: None,
-        }
-    }
-
-    #[test]
-    fn hardlink_paths_require_matching_device_and_inode() {
-        let entries = vec![
-            file_entry(
-                "same-device-1",
-                FileMode::regular(0o644),
-                FileFlags::empty(),
-            ),
-            file_entry(
-                "different-device",
-                FileMode::regular(0o644),
-                FileFlags::empty(),
-            ),
-            file_entry(
-                "same-device-2",
-                FileMode::regular(0o644),
-                FileFlags::empty(),
-            ),
-            file_entry("directory", FileMode::dir(0o755), FileFlags::empty()),
-            file_entry("ghost", FileMode::regular(0o644), FileFlags::GHOST),
-        ];
-        let devices = [1, 2, 1, 1, 1];
-        let inodes = [7, 7, 7, 7, 7];
-
-        assert_eq!(
-            hardlink_paths_by_identity(&entries, &devices, &inodes),
-            vec![vec![
-                "/same-device-1".to_string(),
-                "/same-device-2".to_string()
-            ]]
-        );
+        Ok((lead, header, built.compressed_payload))
     }
 }
 
