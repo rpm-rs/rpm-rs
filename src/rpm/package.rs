@@ -275,6 +275,53 @@ pub struct Package {
 }
 
 impl Package {
+    /// Assemble a package from an explicitly constructed main header and payload.
+    ///
+    /// The signature header is always freshly generated. Existing cryptographic
+    /// signatures are therefore not carried into the resulting package, while
+    /// the selected RPM format and reserved signature space are retained.
+    #[cfg(feature = "payload")]
+    pub fn assemble(
+        lead: Lead,
+        header: Header<IndexTag>,
+        payload: Vec<u8>,
+        format: RpmFormat,
+        reserved_space: Option<u32>,
+    ) -> Result<Self, Error> {
+        let mut header_bytes = Vec::new();
+        header.write(&mut header_bytes)?;
+        let mut signature = SignatureHeaderBuilder::new()
+            .format(format)
+            .reserved_space(reserved_space)
+            .calculate_digests(&header_bytes);
+        if format == RpmFormat::V4 {
+            signature =
+                signature.set_content_length(header_bytes.len() as u64 + payload.len() as u64);
+        }
+        Ok(Self {
+            metadata: PackageMetadata {
+                lead,
+                signature: signature.build()?,
+                header,
+            },
+            payload,
+        })
+    }
+
+    /// Replace the main header and refresh the unsigned signature metadata.
+    #[cfg(feature = "payload")]
+    pub fn replace_header(&mut self, header: Header<IndexTag>) -> Result<(), Error> {
+        self.metadata.header = header;
+        let header_bytes = self.header_bytes()?;
+        let content_length = header_bytes.len() as u64 + self.payload.len() as u64;
+        self.metadata.signature = SignatureHeaderBuilder::from_existing(&self.metadata.signature)?
+            .clear_signatures()
+            .set_content_length(content_length)
+            .calculate_digests(&header_bytes)
+            .build()?;
+        Ok(())
+    }
+
     /// Open and parse a file at the provided path as an RPM package
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let rpm_file = fs::File::open(path.as_ref())?;

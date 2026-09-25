@@ -182,6 +182,8 @@ mod build_types {
         /// `None` means use the builder's default group.
         pub(crate) group: Option<String>,
         pub(crate) symlink: String,
+        /// Override the source file's modification time.
+        pub(crate) modified_at: Option<Timestamp>,
         pub(crate) mode: FileMode,
         pub(crate) flag: FileFlags,
         pub(crate) use_default_permissions: bool,
@@ -203,6 +205,7 @@ mod build_types {
                     user: None,
                     group: None,
                     symlink: "".to_string(),
+                    modified_at: None,
                     mode: FileMode::regular(0o644),
                     flag: FileFlags::empty(),
                     use_default_permissions: true,
@@ -226,6 +229,7 @@ mod build_types {
                     user: None,
                     group: None,
                     symlink: "".to_string(),
+                    modified_at: None,
                     mode: FileMode::dir(0o755),
                     flag: FileFlags::empty(),
                     use_default_permissions: true,
@@ -251,6 +255,7 @@ mod build_types {
                     user: None,
                     group: None,
                     symlink: target.into(),
+                    modified_at: None,
                     mode: FileMode::symbolic_link(0o777),
                     flag: FileFlags::empty(),
                     use_default_permissions: false,
@@ -278,6 +283,7 @@ mod build_types {
                     user: None,
                     group: None,
                     symlink: "".to_string(),
+                    modified_at: None,
                     mode: FileMode::regular(0),
                     flag: FileFlags::GHOST,
                     use_default_permissions: true,
@@ -308,6 +314,7 @@ mod build_types {
                     user: None,
                     group: None,
                     symlink: "".to_string(),
+                    modified_at: None,
                     mode: FileMode::dir(0o755),
                     flag: FileFlags::GHOST,
                     use_default_permissions: true,
@@ -325,6 +332,12 @@ mod build_types {
     }
 
     impl FileOptionsBuilder {
+        /// Override the modification time stored for this file entry.
+        pub fn modified_at(mut self, modified_at: Timestamp) -> Self {
+            self.inner.modified_at = Some(modified_at);
+            self
+        }
+
         /// Associate this regular file with an explicitly declared hardlink set.
         ///
         /// Every set identity must be used by at least two regular files. Members

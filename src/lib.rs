@@ -482,7 +482,7 @@
 mod errors;
 pub use crate::errors::*;
 
-pub(crate) mod constants;
+pub mod constants;
 pub use crate::constants::*;
 
 mod rpm;

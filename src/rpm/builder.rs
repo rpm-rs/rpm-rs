@@ -33,6 +33,32 @@ use crate::PackageMetadata;
 
 use crate::{CompressionType, CompressionWithLevel, RpmFormat};
 
+/// The payload and derived metadata produced by [`PackageBuilder`].
+///
+/// This is useful to tools which want to reuse rpm-rs' CPIO, compression,
+/// ordering, digest, and hardlink handling while assembling the RPM headers
+/// themselves. The header entries are returned in the same sorted order used
+/// by an RPM header and include the file and payload-related records.
+#[derive(Debug)]
+pub struct PayloadBuildResult {
+    /// The compressed payload bytes.
+    pub compressed_payload: Vec<u8>,
+    /// The complete generated main header, including all derived records.
+    pub header: Header<IndexTag>,
+    /// Generated file-list header entries in RPM header order.
+    pub file_metadata: Vec<HeaderEntry>,
+    /// The total installed size reported by the package.
+    pub installed_size: u64,
+    /// The uncompressed CPIO archive size.
+    pub archive_size: u64,
+    /// The compression used for the payload.
+    pub compression: CompressionType,
+    /// Generated payload digest and compression-related header entries.
+    pub payload_digests: Vec<HeaderEntry>,
+    /// Groups of package paths sharing an RPM device and inode identity.
+    pub hardlinks: Vec<Vec<String>>,
+}
+
 #[derive(Copy, Clone, PartialEq)]
 pub struct BuildConfig {
     format: RpmFormat,
@@ -900,6 +926,8 @@ impl PackageBuilder {
         bulk: bool,
         #[cfg(unix)] source_metadata: Option<&fs::Metadata>,
     ) -> Result<(), Error> {
+        let modified_at = options.modified_at.unwrap_or(modified_at);
+
         // Apply builder-level defaults for ownership and permissions where
         // the FileOptions hasn't been explicitly overridden.
         let defaults = if options.mode.file_type() == FileType::Dir {
@@ -1484,6 +1512,107 @@ impl PackageBuilder {
             payload: content,
         };
         Ok(pkg)
+    }
+
+    /// Build only the payload and its derived file metadata.
+    ///
+    /// This consumes the builder in the same way as [`Self::build`]. It is
+    /// intended for applications such as tarpm which preserve or construct
+    /// the remaining header records independently.
+    pub fn build_payload(&mut self) -> Result<PayloadBuildResult, Error> {
+        let package = self.build()?;
+        let entries = package
+            .metadata
+            .header
+            .get_all_entries()?
+            .into_iter()
+            .map(|(tag, data)| HeaderEntry::new(tag, data))
+            .collect::<Vec<_>>();
+        let file_tags = [
+            IndexTag::RPMTAG_FILESIZES as u32,
+            IndexTag::RPMTAG_LONGFILESIZES as u32,
+            IndexTag::RPMTAG_FILEMODES as u32,
+            IndexTag::RPMTAG_FILERDEVS as u32,
+            IndexTag::RPMTAG_FILEMTIMES as u32,
+            IndexTag::RPMTAG_FILEDIGESTS as u32,
+            IndexTag::RPMTAG_FILELINKTOS as u32,
+            IndexTag::RPMTAG_FILEFLAGS as u32,
+            IndexTag::RPMTAG_FILEUSERNAME as u32,
+            IndexTag::RPMTAG_FILEGROUPNAME as u32,
+            IndexTag::RPMTAG_FILEDEVICES as u32,
+            IndexTag::RPMTAG_FILEINODES as u32,
+            IndexTag::RPMTAG_DIRINDEXES as u32,
+            IndexTag::RPMTAG_FILELANGS as u32,
+            IndexTag::RPMTAG_FILEVERIFYFLAGS as u32,
+            IndexTag::RPMTAG_BASENAMES as u32,
+            IndexTag::RPMTAG_DIRNAMES as u32,
+            IndexTag::RPMTAG_FILECAPS as u32,
+        ];
+        let payload_tags = [
+            IndexTag::RPMTAG_PAYLOADSHA256 as u32,
+            IndexTag::RPMTAG_PAYLOADSHA256ALT as u32,
+            IndexTag::RPMTAG_PAYLOAD_SHA3_256 as u32,
+            IndexTag::RPMTAG_PAYLOAD_SHA3_256_ALT as u32,
+            IndexTag::RPMTAG_PAYLOAD_SHA512 as u32,
+            IndexTag::RPMTAG_PAYLOAD_SHA512_ALT as u32,
+            IndexTag::RPMTAG_PAYLOADSIZE as u32,
+            IndexTag::RPMTAG_PAYLOADSIZEALT as u32,
+            IndexTag::RPMTAG_PAYLOADCOMPRESSOR as u32,
+            IndexTag::RPMTAG_PAYLOADFLAGS as u32,
+        ];
+        let file_metadata = entries
+            .iter()
+            .filter(|entry| file_tags.contains(&entry.tag))
+            .cloned()
+            .collect();
+        let payload_digests = entries
+            .iter()
+            .filter(|entry| payload_tags.contains(&entry.tag))
+            .cloned()
+            .collect();
+
+        let file_entries = package.metadata.get_file_entries()?;
+        let devices = package
+            .metadata
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEDEVICES)
+            .unwrap_or_default();
+        let inodes = package
+            .metadata
+            .header
+            .get_entry_data_as_u32_array(IndexTag::RPMTAG_FILEINODES)
+            .unwrap_or_default();
+        let hardlinks = hardlink_paths_by_identity(&file_entries, &devices, &inodes);
+        let archive_size = package
+            .metadata
+            .header
+            .get_entry_data_as_u64(IndexTag::RPMTAG_PAYLOADSIZEALT)
+            .or_else(|_| -> Result<u64, Error> {
+                package
+                    .metadata
+                    .header
+                    .get_entry_data_as_u32(IndexTag::RPMTAG_PAYLOADSIZEALT)
+                    .map(u64::from)
+            })
+            .or_else(|_| -> Result<u64, Error> {
+                let mut archive = crate::decompress_stream(std::io::Cursor::new(&package.payload))?;
+                let mut bytes = Vec::new();
+                archive.read_to_end(&mut bytes)?;
+                Ok(bytes.len() as u64)
+            })?;
+        let installed_size = package.metadata.get_installed_size()?;
+        let compression = package.metadata.get_payload_compressor()?;
+        let header = package.metadata.header;
+        Ok(PayloadBuildResult {
+            compressed_payload: package.payload,
+            header,
+            file_metadata,
+            installed_size,
+            archive_size,
+            compression,
+            payload_digests,
+            hardlinks,
+        })
     }
 
     /// Build the package and sign it with the provided signer
@@ -2667,6 +2796,88 @@ impl PackageBuilder {
         let header = Header::from_index_entries(actual_records, IndexTag::RPMTAG_HEADERIMMUTABLE);
 
         Ok((lead, header, payload))
+    }
+}
+
+/// Group regular, non-ghost file paths by the RPM device and inode identity.
+fn hardlink_paths_by_identity(
+    file_entries: &[FileEntry<'_>],
+    devices: &[u32],
+    inodes: &[u32],
+) -> Vec<Vec<String>> {
+    let mut paths_by_identity: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
+    for ((entry, device), inode) in file_entries
+        .iter()
+        .zip(devices.iter().copied())
+        .zip(inodes.iter().copied())
+    {
+        if entry.file_type() != FileType::Regular || entry.flags().contains(FileFlags::GHOST) {
+            continue;
+        }
+        paths_by_identity
+            .entry((device, inode))
+            .or_default()
+            .push(entry.path().to_string_lossy().into_owned());
+    }
+    paths_by_identity
+        .into_values()
+        .filter(|paths| paths.len() > 1)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::borrow::Cow;
+
+    fn file_entry(name: &'static str, mode: FileMode, flags: FileFlags) -> FileEntry<'static> {
+        FileEntry {
+            dirname: Cow::Borrowed("/"),
+            basename: Cow::Borrowed(name),
+            mode,
+            user: Cow::Borrowed("root"),
+            group: Cow::Borrowed("root"),
+            modified_at: Timestamp(0),
+            size: 0,
+            flags,
+            digest: None,
+            caps: None,
+            linkto: None,
+            ima_signature: None,
+        }
+    }
+
+    #[test]
+    fn hardlink_paths_require_matching_device_and_inode() {
+        let entries = vec![
+            file_entry(
+                "same-device-1",
+                FileMode::regular(0o644),
+                FileFlags::empty(),
+            ),
+            file_entry(
+                "different-device",
+                FileMode::regular(0o644),
+                FileFlags::empty(),
+            ),
+            file_entry(
+                "same-device-2",
+                FileMode::regular(0o644),
+                FileFlags::empty(),
+            ),
+            file_entry("directory", FileMode::dir(0o755), FileFlags::empty()),
+            file_entry("ghost", FileMode::regular(0o644), FileFlags::GHOST),
+        ];
+        let devices = [1, 2, 1, 1, 1];
+        let inodes = [7, 7, 7, 7, 7];
+
+        assert_eq!(
+            hardlink_paths_by_identity(&entries, &devices, &inodes),
+            vec![vec![
+                "/same-device-1".to_string(),
+                "/same-device-2".to_string()
+            ]]
+        );
     }
 }
 
