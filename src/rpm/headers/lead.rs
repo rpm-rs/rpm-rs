@@ -41,6 +41,91 @@ impl std::fmt::Debug for Lead {
 }
 
 impl Lead {
+    /// Construct a conventional binary RPM lead for a package name.
+    #[cfg(feature = "payload")]
+    pub fn new(name: &str) -> Self {
+        let mut name_arr = [0; 66];
+        let name_size = std::cmp::min(name_arr.len() - 1, name.len());
+        name_arr[..name_size].clone_from_slice(&name.as_bytes()[..name_size]);
+        Lead {
+            magic: RPM_MAGIC,
+            major: 3,
+            minor: 0,
+            package_type: 0,
+            arch: 0,
+            name: name_arr,
+            os: 1,
+            signature_type: 5,
+            reserved: [0; 16],
+        }
+    }
+
+    /// Return the RPM lead magic bytes.
+    pub fn magic(&self) -> [u8; 4] {
+        self.magic
+    }
+
+    /// Return the lead major version.
+    ///
+    /// NOTE: Not actually used or valid in practice. RPMv6 still encodes a "4" here.
+    pub fn major(&self) -> u8 {
+        self.major
+    }
+
+    /// Return the lead minor version.
+    ///
+    /// NOTE: Not actually used or valid in practice. RPMv6 still encodes a "0" here (as in 4.0).
+    pub fn minor(&self) -> u8 {
+        self.minor
+    }
+
+    /// Return the lead package type.
+    ///
+    /// NOTE: Typically "1" if a source package and "0" otherwise, but the header is the authoritative
+    /// source of this information.
+    pub fn package_type(&self) -> u16 {
+        self.package_type
+    }
+
+    /// Return the lead architecture identifier.
+    ///
+    /// NOTE: Not actually used or valid in practice. Typically hardcoded to "0".
+    pub fn arch(&self) -> u16 {
+        self.arch
+    }
+
+    /// Return the lead operating-system identifier.
+    ///
+    /// NOTE: Not actually used or valid in practice. Typically hardcoded to "0".
+    pub fn os(&self) -> u16 {
+        self.os
+    }
+
+    /// Return the lead signature type identifier.
+    ///
+    /// NOTE: Typically hardcoded to "5".
+    pub fn signature_type(&self) -> u16 {
+        self.signature_type
+    }
+
+    /// Return the reserved bytes stored in the lead.
+    pub fn reserved(&self) -> [u8; 16] {
+        self.reserved
+    }
+
+    /// Return the NUL-terminated package name stored in the lead.
+    ///
+    /// NOTE: Truncated at 65 characters. The header is the authoritative source of this
+    /// information.
+    pub fn name(&self) -> String {
+        let end = self
+            .name
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(self.name.len());
+        String::from_utf8_lossy(&self.name[..end]).into_owned()
+    }
+
     pub(crate) fn parse(input: &[u8]) -> Result<Self, Error> {
         let (rest, magic) = complete::take(4usize)(input)?;
         for i in 0..magic.len() {
@@ -87,26 +172,6 @@ impl Lead {
         out.write_all(&self.signature_type.to_be_bytes())?;
         out.write_all(&self.reserved)?;
         Ok(())
-    }
-
-    #[cfg(feature = "payload")]
-    pub(crate) fn new(name: &str) -> Self {
-        let mut name_arr = [0; 66];
-        // the last byte needs to be the null terminator
-        let name_size = std::cmp::min(name_arr.len() - 1, name.len());
-
-        name_arr[..name_size].clone_from_slice(&name.as_bytes()[..name_size]);
-        Lead {
-            magic: RPM_MAGIC,
-            major: 3,
-            minor: 0,
-            package_type: 0,
-            arch: 0,
-            name: name_arr,
-            os: 1,
-            signature_type: 5,
-            reserved: [0; 16],
-        }
     }
 }
 
