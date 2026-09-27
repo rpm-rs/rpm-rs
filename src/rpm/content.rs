@@ -76,6 +76,8 @@ impl<'a> PayloadLayout<'a> {
             .collect::<Vec<_>>();
         let mut payload_presence = vec![true; file_entries.len()];
         for &index in &ghosts {
+            // A ghost can have a nonzero header size but has no payload bytes.
+            payload_sizes[index] = 0;
             payload_presence[index] = false;
         }
         let mut hardlink_content_indices = HashMap::new();
@@ -178,8 +180,9 @@ impl Package {
     /// Iterate over the file contents of the package payload.
     ///
     /// Entries are returned in payload order, which may differ from the order of
-    /// [`PackageMetadata::get_file_entries()`]. Ghost entries, which have no
-    /// payload representation, are returned after payload entries.
+    /// [`PackageMetadata::get_file_entries()`]. Ghost entries absent from the
+    /// payload are returned afterward. If a legacy payload contains a ghost
+    /// record, it is returned in payload order without content.
     ///
     /// # Examples
     ///
@@ -278,39 +281,23 @@ impl Package {
                                 .join(target.strip_prefix("/").unwrap_or(dest.as_ref()))
                         })
                     });
-                    if let Some(target) = hardlink_target {
-                        if target == file_path {
-                            let mut f = fs::File::create(&file_path)?;
-                            let content = file.content.as_deref().ok_or_else(|| {
-                                Error::Io(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "hardlink target has no payload content",
-                                ))
-                            })?;
-                            f.write_all(content)?;
-                            #[cfg(unix)]
-                            {
-                                let perms =
-                                    fs::Permissions::from_mode(file_entry.permissions().into());
-                                f.set_permissions(perms)?;
-                            }
-                        } else {
+                    let missing_content = match hardlink_target {
+                        Some(target) if target != file_path => {
                             deferred_hardlinks.push((target, file_path));
+                            continue;
                         }
-                    } else {
-                        let mut f = fs::File::create(&file_path)?;
-                        let content = file.content.as_deref().ok_or_else(|| {
-                            Error::Io(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "regular file has no payload content",
-                            ))
-                        })?;
-                        f.write_all(content)?;
-                        #[cfg(unix)]
-                        {
-                            let perms = fs::Permissions::from_mode(file_entry.permissions().into());
-                            f.set_permissions(perms)?;
-                        }
+                        Some(_) => "hardlink target has no payload content",
+                        None => "regular file has no payload content",
+                    };
+                    let content = file.content.as_deref().ok_or_else(|| {
+                        Error::Io(io::Error::new(io::ErrorKind::InvalidData, missing_content))
+                    })?;
+                    let mut f = fs::File::create(&file_path)?;
+                    f.write_all(content)?;
+                    #[cfg(unix)]
+                    {
+                        let perms = fs::Permissions::from_mode(file_entry.permissions().into());
+                        f.set_permissions(perms)?;
                     }
                 }
                 FileType::SymbolicLink => {
@@ -451,9 +438,14 @@ impl<'a> Iterator for FileIterator<'a> {
                         ))));
                     }
                 };
+                if self.seen[payload_index] {
+                    return Some(Err(Error::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "payload contains a duplicate RPM file entry",
+                    ))));
+                }
                 // Older RPMs could incorrectly include ghosts in the payload. Drain the
-                // record so the archive remains readable, but emit the ghost below with the
-                // other header-only entries.
+                // record without exposing its contents, then emit the ghost only once.
                 if self.file_entries[payload_index]
                     .flags
                     .contains(FileFlags::GHOST)
@@ -461,14 +453,12 @@ impl<'a> Iterator for FileIterator<'a> {
                     if let Err(e) = entry_reader.finish() {
                         return Some(Err(Error::Io(e)));
                     }
-                    continue;
-                }
-
-                if self.seen[payload_index] {
-                    return Some(Err(Error::Io(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "payload contains a duplicate RPM file entry",
-                    ))));
+                    self.seen[payload_index] = true;
+                    self.count += 1;
+                    return Some(Ok(RpmFile {
+                        metadata: self.file_entries[payload_index].clone(),
+                        content: None,
+                    }));
                 }
 
                 let mut content = Vec::new();
@@ -551,9 +541,9 @@ impl ExactSizeIterator for FileIterator<'_> {
 /// Unlike [`Package`], this avoids loading the entire payload into memory.
 /// Call [`next_file`](Self::next_file) repeatedly to walk the archive one entry at a time.
 ///
-/// Ghost files (not present in the payload archive) are returned with an empty
-/// body, matching the behaviour of [`Package::files`].
-/// Entries are returned in payload order; ghost entries are returned afterward.
+/// Ghost files are returned with an empty body, matching the behaviour of
+/// [`Package::files`]. Entries are returned in payload order; header-only ghosts
+/// follow afterward. Legacy ghost records are returned at their archive position.
 ///
 /// # Note on iteration
 ///
@@ -654,8 +644,8 @@ impl PackageReader {
 
     /// Return the next file from the payload, or `None` at end of archive.
     ///
-    /// Ghost files are returned with an empty body (they are not present in the
-    /// payload archive, so no bytes are read from the stream for them).
+    /// Ghost files are returned with an empty body. Any legacy ghost record in
+    /// the payload is drained without exposing its contents.
     ///
     /// The returned [`StreamingRpmFile`] holds a mutable borrow on the underlying
     /// decompression stream. Drop it or call [`StreamingRpmFile::finish`] before
@@ -689,6 +679,19 @@ impl PackageReader {
                         io::ErrorKind::InvalidData,
                         "payload contains a duplicate RPM file entry",
                     )));
+                }
+                if self.file_entries[file_index]
+                    .flags
+                    .contains(FileFlags::GHOST)
+                {
+                    reader.finish().map_err(Error::Io)?;
+                    self.seen[file_index] = true;
+                    self.count += 1;
+                    return Ok(Some(StreamingRpmFile {
+                        metadata: self.file_entries[file_index].clone(),
+                        reader: None,
+                        payload_present: false,
+                    }));
                 }
                 let payload_present = self.payload_presence[file_index];
                 self.seen[file_index] = true;
@@ -783,6 +786,7 @@ mod test_payload_layout {
     use crate::Timestamp;
     use std::borrow::Cow;
 
+    /// Create a regular header entry with a controllable size and flags.
     fn regular_entry(name: &'static str, size: usize, flags: FileFlags) -> FileEntry<'static> {
         FileEntry {
             dirname: Cow::Borrowed("/"),
@@ -800,6 +804,7 @@ mod test_payload_layout {
         }
     }
 
+    /// Only members sharing both device and inode form a hardlink set; earlier members carry no data.
     #[test]
     fn groups_by_device_and_inode_and_sizes_stripped_members() {
         let entries = vec![
@@ -825,10 +830,12 @@ mod test_payload_layout {
         );
     }
 
+    /// Existing and missing ghosts have no payload, even if the existing ghost has a header size.
     #[test]
     fn ghosts_and_incomplete_identities_are_not_hardlink_members() {
         let entries = vec![
-            regular_entry("ghost", 17, FileFlags::GHOST),
+            regular_entry("existing-ghost", 17, FileFlags::GHOST),
+            regular_entry("missing-ghost", 0, FileFlags::GHOST),
             regular_entry("real-1", 19, FileFlags::empty()),
             regular_entry("real-2", 19, FileFlags::empty()),
             regular_entry("unmatched", 13, FileFlags::empty()),
@@ -839,12 +846,24 @@ mod test_payload_layout {
         };
         let layout = PayloadLayout::from_identities(
             entries,
-            vec![Some(identity), Some(identity), Some(identity), None],
+            vec![
+                Some(identity),
+                Some(identity),
+                Some(identity),
+                Some(identity),
+                None,
+            ],
         );
 
-        assert_eq!(layout.ghosts, vec![0]);
-        assert_eq!(layout.payload_sizes, vec![17, 0, 19, 13]);
-        assert_eq!(layout.hardlink_content_indices.get(&identity), Some(&2));
+        assert_eq!(layout.ghosts, vec![0, 1]);
+        assert_eq!(layout.file_entries[0].size(), 17);
+        assert_eq!(layout.file_entries[1].size(), 0);
+        assert_eq!(layout.payload_sizes, vec![0, 0, 0, 19, 13]);
+        assert_eq!(
+            layout.payload_presence,
+            vec![false, false, false, true, true]
+        );
+        assert_eq!(layout.hardlink_content_indices.get(&identity), Some(&3));
     }
 }
 
@@ -853,11 +872,12 @@ mod test_payload_layout {
 /// they otherwise would make more sense as integration tests.
 #[cfg(test)]
 mod test_payload_integration {
+    use super::payload::{Builder as CpioBuilder, trailer};
     use crate::*;
     use pretty_assertions::assert_eq;
     use sha2::{Digest, Sha256};
     use std::borrow::Cow;
-    use std::io::Read;
+    use std::io::{Read, Write};
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     use std::path::Path;
@@ -1061,6 +1081,7 @@ mod test_payload_integration {
         Ok(())
     }
 
+    /// Decompression leaves gzip-compressed payload entries readable and extractable.
     #[test]
     #[cfg(feature = "gzip-compression")]
     fn test_files_after_decompress_gzip() -> Result<(), Box<dyn std::error::Error>> {
@@ -1071,6 +1092,7 @@ mod test_payload_integration {
         test_basic_package_files(&package)
     }
 
+    /// Decompression leaves zstd-compressed payload entries readable and extractable.
     #[test]
     #[cfg(feature = "zstd-compression")]
     fn test_files_after_decompress_zstd() -> Result<(), Box<dyn std::error::Error>> {
@@ -1081,6 +1103,7 @@ mod test_payload_integration {
         test_basic_package_files(&package)
     }
 
+    /// Decompression leaves xz-compressed payload entries readable and extractable.
     #[test]
     #[cfg(feature = "xz-compression")]
     fn test_files_after_decompress_xz() -> Result<(), Box<dyn std::error::Error>> {
@@ -1091,6 +1114,7 @@ mod test_payload_integration {
         test_basic_package_files(&package)
     }
 
+    /// The uncompressed payload path preserves the same files as compressed packages.
     #[test]
     fn test_files_after_decompress_noop() -> Result<(), Box<dyn std::error::Error>> {
         let mut package = Package::open(pkgs::v6::RPM_BASIC)?;
@@ -2340,6 +2364,82 @@ mod test_payload_integration {
         Ok(())
     }
 
+    /// Test that, should a ghost record exist in the payload, it is emitted once
+    /// without content and doesn't corrupt additional reading of files.
+    ///
+    /// This is a regression test for rare buggy (generally old) RPMs which include
+    /// entries in the archive for ghost files.
+    #[test]
+    fn test_ghost_record_in_payload() -> Result<(), Box<dyn std::error::Error>> {
+        let mut package = Package::open(pkgs::v4::RPM_BASIC)?;
+        let ghost_bytes = b"unexpected ghost content";
+        let regular_bytes = b"ordinary content";
+        package.payload = {
+            let mut buf = Vec::new();
+            let mut ghost = CpioBuilder::new("./var/log/rpm-basic/basic.log")
+                .mode(0o100644)
+                .write_cpio(buf, ghost_bytes.len() as u32);
+            ghost.write_all(ghost_bytes)?;
+            buf = ghost.finish()?;
+
+            let mut regular = CpioBuilder::new("./usr/bin/rpm-basic")
+                .mode(0o100755)
+                .write_cpio(buf, regular_bytes.len() as u32);
+            regular.write_all(regular_bytes)?;
+            buf = regular.finish()?;
+            trailer(buf)?
+        };
+
+        // check that iteration works properly
+        let files: Vec<RpmFile> = package.files()?.collect::<Result<_, _>>()?;
+        assert_eq!(files.len(), 2);
+
+        assert_eq!(files[0].metadata.basename(), "basic.log");
+        assert!(!files[0].has_payload());
+        assert_eq!(files[0].content(), None);
+
+        assert_eq!(files[1].metadata.basename(), "rpm-basic");
+        assert!(files[1].has_payload());
+        assert_eq!(files[1].content(), Some(regular_bytes.as_slice()));
+
+        // check that extraction works properly
+        let temp_dir = tempfile::tempdir()?;
+        let extract_path = temp_dir.path().join("extracted");
+        package.extract(&extract_path)?;
+        assert!(!extract_path.join("var/log/rpm-basic/basic.log").exists());
+        assert_eq!(
+            std::fs::read(extract_path.join("usr/bin/rpm-basic"))?,
+            regular_bytes
+        );
+
+        // check that streaming package parsing works properly
+        let mut bytes = Vec::new();
+        package.write(&mut bytes)?;
+        let input = std::io::BufReader::new(std::io::Cursor::new(bytes));
+        let mut reader = PackageReader::parse(input)?;
+
+        let mut content = Vec::new();
+        {
+            let mut ghost = reader.next_file()?.expect("legacy ghost record");
+            assert_eq!(ghost.metadata.basename(), "basic.log");
+            assert!(!ghost.has_payload());
+            ghost.read_to_end(&mut content)?;
+            assert!(content.is_empty());
+            ghost.finish()?;
+        }
+
+        {
+            let mut regular = reader.next_file()?.expect("file after ghost record");
+            assert_eq!(regular.metadata.basename(), "rpm-basic");
+            assert!(regular.has_payload());
+            regular.read_to_end(&mut content)?;
+            regular.finish()?;
+        }
+        assert_eq!(content, regular_bytes);
+        assert!(reader.next_file()?.is_none());
+        Ok(())
+    }
+
     /// Test that dropping a StreamingRpmFile before fully reading it still allows
     /// reading the subsequent file correctly (unread bytes are drained on drop).
     #[test]
@@ -2408,6 +2508,7 @@ mod test_payload_integration {
         Ok(())
     }
 
+    /// Streaming a decompressed package yields the same files as the in-memory API.
     #[test]
     #[cfg(feature = "zstd-compression")]
     fn test_package_reader_after_decompress_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
