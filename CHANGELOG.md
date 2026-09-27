@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - RPM hardlink payloads with stripped CPIO records are now read and extracted correctly.
+- Legacy ghost payload records are drained without exposing their contents, and both file APIs return each ghost only once.
 
 ## 0.28.0
 
