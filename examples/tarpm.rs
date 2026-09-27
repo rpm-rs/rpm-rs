@@ -12,7 +12,7 @@ use num::FromPrimitive;
 use rpm::{
     BuildConfig, CompressionType, DigestAlgorithm, FileOptions, FileType, Header, HeaderEditor,
     HeaderEntry, IndexData, IndexTag, Lead, Package, PayloadBuilder, RpmFormat, Tag, Timestamp,
-    constants,
+    constants, is_region_tag,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -253,16 +253,9 @@ fn create(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             .compression(compression)
             .file_digest_algorithm(file_digest_algorithm),
     );
-    let source_header_entries = source_entries
-        .iter()
-        .filter(|entry| {
-            entry.tag != constants::HEADER_IMMUTABLE && entry.tag != constants::HEADER_REGIONS
-        })
-        .cloned()
-        .collect::<Vec<_>>();
     let source_package = Package::assemble(
         Lead::new(&name),
-        Header::from_entries(source_header_entries, IndexTag::RPMTAG_HEADERIMMUTABLE),
+        Header::from_entries(source_entries.clone(), IndexTag::RPMTAG_HEADERIMMUTABLE),
         Vec::new(),
         format,
         None,
@@ -326,10 +319,8 @@ fn create(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let built = builder.build()?;
 
     let mut header = HeaderEditor::new(IndexTag::RPMTAG_HEADERIMMUTABLE);
-    header.extend(source_entries.into_iter().filter(|entry| {
-        entry.tag != constants::HEADER_IMMUTABLE && entry.tag != constants::HEADER_REGIONS
-    }));
-    built.replace_derived_entries(&mut header);
+    header.extend(source_entries);
+    built.apply_to_header(&mut header);
     let package = Package::assemble(
         Lead::new(&name),
         header.build(),
@@ -447,7 +438,7 @@ fn header_document<T: Tag>(
     let tags = header
         .get_all_entries()?
         .into_iter()
-        .filter(|(tag, _)| *tag != constants::HEADER_IMMUTABLE && *tag != constants::HEADER_REGIONS)
+        .filter(|(tag, _)| !is_region_tag(*tag))
         .map(|(tag, data)| data_to_json_tag(tag, data, tag_name))
         .collect();
     Ok(HeaderDocument {

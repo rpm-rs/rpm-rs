@@ -1234,7 +1234,7 @@ mod rebuild_api {
             let package = ordinary.build()?;
 
             assert_eq!(payload.compressed_payload, package.payload);
-            for entry in payload.derived_header_entries() {
+            for entry in payload.rebuild_header_entries() {
                 assert_eq!(package.metadata.header.entry(entry.tag)?, entry.data);
             }
         }
@@ -1265,15 +1265,15 @@ mod rebuild_api {
         builder.with_symlink(FileOptions::symlink("/link", "/a"))?;
         let payload = builder.build()?;
 
-        assert_eq!(payload.files[0].size, 6);
-        assert_eq!(payload.files[0].payload_size, 0);
-        assert_eq!(payload.files[1].payload_size, 6);
-        assert_eq!(payload.files[0].modified_at, Timestamp(12));
+        assert_eq!(payload.files()[0].size, 6);
+        assert_eq!(payload.files()[0].payload_size, 0);
+        assert_eq!(payload.files()[1].payload_size, 6);
+        assert_eq!(payload.files()[0].modified_at, Timestamp(12));
         assert_eq!(
-            payload.files[0].digest,
+            payload.files()[0].digest,
             hex::encode(sha2::Sha512::digest(b"shared"))
         );
-        assert_eq!(payload.files[2].payload_size, 0);
+        assert_eq!(payload.files()[2].payload_size, 0);
         assert_eq!(
             payload.hardlinks(),
             vec![vec!["/a".to_string(), "/b".to_string()]]
@@ -1322,7 +1322,7 @@ mod rebuild_api {
             IndexTag::RPMTAG_FILELANGS as u32,
             IndexData::StringArray(vec!["fr".into()]),
         );
-        payload.replace_derived_entries(&mut editor);
+        payload.apply_to_header(&mut editor);
         let header = editor.build();
         assert_eq!(header.entry(65000u32)?, IndexData::Bin(vec![0, 255]));
         assert_eq!(
@@ -1338,6 +1338,134 @@ mod rebuild_api {
                 .count(),
             1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn changed_file_set_can_drop_stale_positional_metadata() -> Result<(), Error> {
+        let mut builder = PayloadBuilder::new();
+        builder.with_file_contents(b"keep".to_vec(), FileOptions::new("/keep"))?;
+        builder.with_file_contents(b"new".to_vec(), FileOptions::new("/new"))?;
+        let payload = builder.build()?;
+        let mut editor = HeaderEditor::new(IndexTag::RPMTAG_HEADERIMMUTABLE);
+        editor.upsert(65000, IndexData::Bin(vec![4, 5, 6]));
+        editor.upsert(
+            IndexTag::RPMTAG_FILELANGS as u32,
+            IndexData::StringArray(vec!["fr".into(), "de".into()]),
+        );
+        // An edit that changes file order must remap or remove caller-owned
+        // positional arrays before applying the rebuilt file metadata.
+        editor.remove(IndexTag::RPMTAG_FILELANGS as u32);
+        payload.apply_to_header(&mut editor);
+        let header = editor.build();
+        assert_eq!(
+            header.entry(IndexTag::RPMTAG_BASENAMES)?,
+            IndexData::StringArray(vec!["keep".into(), "new".into()])
+        );
+        assert!(!header.entry_is_present(IndexTag::RPMTAG_FILELANGS));
+        assert_eq!(header.entry(65000u32)?, IndexData::Bin(vec![4, 5, 6]));
+        Ok(())
+    }
+
+    /// File metadata staged before building replaces stale header values.
+    #[test]
+    fn rebuilding_uses_staged_file_metadata() -> Result<(), Error> {
+        let mut builder = PayloadBuilder::new();
+        builder.with_file_contents(
+            b"bytes".to_vec(),
+            FileOptions::new("/file")
+                .permissions(0o600)
+                .modified_at(Timestamp(42))
+                .user("alice"),
+        )?;
+        let payload = builder.build()?;
+        let mut editor = HeaderEditor::new(IndexTag::RPMTAG_HEADERIMMUTABLE);
+        editor.upsert(
+            IndexTag::RPMTAG_FILEMODES as u32,
+            IndexData::Int16(vec![FileMode::regular(0o644).raw_mode()]),
+        );
+        editor.upsert(
+            IndexTag::RPMTAG_FILEMTIMES as u32,
+            IndexData::Int32(vec![1]),
+        );
+        editor.upsert(
+            IndexTag::RPMTAG_FILEUSERNAME as u32,
+            IndexData::StringArray(vec!["root".into()]),
+        );
+
+        payload.apply_to_header(&mut editor);
+        let header = editor.build();
+        assert_eq!(
+            (
+                header.entry(IndexTag::RPMTAG_FILEMODES)?,
+                header.entry(IndexTag::RPMTAG_FILEMTIMES)?,
+                header.entry(IndexTag::RPMTAG_FILEUSERNAME)?,
+            ),
+            (
+                IndexData::Int16(vec![FileMode::regular(0o600).raw_mode()]),
+                IndexData::Int32(vec![42]),
+                IndexData::StringArray(vec!["alice".into()]),
+            )
+        );
+        Ok(())
+    }
+
+    /// Rebuilt packages should not retain file or verity signatures for old payload bytes.
+    #[test]
+    fn rebuilding_discards_stale_file_signatures() -> Result<(), Error> {
+        let mut builder = PayloadBuilder::new();
+        builder.with_file_contents(b"new bytes".to_vec(), FileOptions::new("/file"))?;
+        let payload = builder.build()?;
+        let mut editor = HeaderEditor::new(IndexTag::RPMTAG_HEADERIMMUTABLE);
+        editor.upsert(65000, IndexData::Bin(vec![0, 255]));
+        editor.upsert(
+            IndexTag::RPMTAG_FILESIGNATURES as u32,
+            IndexData::StringArray(vec!["stale".into()]),
+        );
+        editor.upsert(
+            IndexTag::RPMTAG_FILESIGNATURELENGTH as u32,
+            IndexData::Int32(vec![5]),
+        );
+        editor.upsert(
+            IndexTag::RPMTAG_VERITYSIGNATURES as u32,
+            IndexData::StringArray(vec!["stale".into()]),
+        );
+        editor.upsert(
+            IndexTag::RPMTAG_VERITYSIGNATUREALGO as u32,
+            IndexData::Int32(vec![1]),
+        );
+        editor.upsert(
+            IndexTag::RPMTAG_OPENPGP as u32,
+            IndexData::StringArray(vec!["stale".into()]),
+        );
+
+        payload.apply_to_header(&mut editor);
+        let package = Package::assemble(
+            Lead::new("rebuild"),
+            editor.build(),
+            payload.compressed_payload,
+            RpmFormat::V4,
+            None,
+        )?;
+        let stale_tags = [
+            IndexTag::RPMTAG_FILESIGNATURES,
+            IndexTag::RPMTAG_FILESIGNATURELENGTH,
+            IndexTag::RPMTAG_VERITYSIGNATURES,
+            IndexTag::RPMTAG_VERITYSIGNATUREALGO,
+            IndexTag::RPMTAG_OPENPGP,
+        ]
+        .into_iter()
+        .filter(|&tag| package.metadata.header.entry_is_present(tag))
+        .collect::<Vec<_>>();
+        assert!(
+            stale_tags.is_empty(),
+            "stale signature tags: {stale_tags:?}"
+        );
+        assert_eq!(
+            package.metadata.header.entry(65000u32)?,
+            IndexData::Bin(vec![0, 255])
+        );
+        assert!(package.check_digests()?.header_sha256.is_verified());
         Ok(())
     }
 }

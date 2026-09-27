@@ -38,7 +38,11 @@ use crate::PackageMetadata;
 
 use crate::{CompressionType, CompressionWithLevel, RpmFormat};
 
-/// One file in the header's positional file order after payload construction.
+/// Resolved metadata for one file in RPM header order after payload construction.
+///
+/// This includes calculated archive facts and effective metadata selected during
+/// staging. For fields also stored in CPIO, edit the staging options before
+/// building so the archive and header stay consistent.
 #[derive(Clone, Debug)]
 pub struct BuiltFile {
     /// Normalized package path.
@@ -75,7 +79,7 @@ pub struct BuiltFile {
     pub payload_size: u64,
 }
 
-/// The payload and derived metadata produced by [`PayloadBuilder`] or [`PackageBuilder`].
+/// The payload and resolved file metadata produced by [`PayloadBuilder`] or [`PackageBuilder`].
 ///
 /// File arrays not represented by [`BuiltFile`] remain the caller's responsibility.
 /// In particular, unknown positional arrays must be remapped or removed if files
@@ -84,8 +88,9 @@ pub struct BuiltFile {
 pub struct PayloadBuildResult {
     /// The compressed payload bytes.
     pub compressed_payload: Vec<u8>,
-    /// Files in RPM header order.
-    pub files: Vec<BuiltFile>,
+    /// Files in RPM header order. Exposed immutably so derived header entries
+    /// cannot diverge from the payload after construction.
+    files: Vec<BuiltFile>,
     /// The total installed size reported by the package.
     pub installed_size: u64,
     /// The uncompressed CPIO archive size.

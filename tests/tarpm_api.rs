@@ -195,22 +195,22 @@ fn standalone_payload_builder_handles_hardlinks_ghosts_symlinks_and_mtime()
     let result = builder.build()?;
     assert_eq!(
         result
-            .files
+            .files()
             .iter()
             .map(|file| file.path.as_str())
             .collect::<Vec<_>>(),
         vec!["/a", "/b", "/dir", "/ghost", "/link"]
     );
-    assert_eq!(result.files[0].size, 6);
-    assert_eq!(result.files[0].payload_size, 0);
-    assert_eq!(result.files[1].payload_size, 6);
+    assert_eq!(result.files()[0].size, 6);
+    assert_eq!(result.files()[0].payload_size, 0);
+    assert_eq!(result.files()[1].payload_size, 6);
     assert_eq!(
-        result.files[0].digest,
+        result.files()[0].digest,
         hex::encode(sha2::Sha512::digest(b"shared"))
     );
-    assert_eq!(result.files[0].digest, result.files[1].digest);
-    assert_eq!(result.files[0].modified_at, Timestamp(12));
-    assert_eq!(result.files[3].payload_size, 0);
+    assert_eq!(result.files()[0].digest, result.files()[1].digest);
+    assert_eq!(result.files()[0].modified_at, Timestamp(12));
+    assert_eq!(result.files()[3].payload_size, 0);
     assert_eq!(
         result.hardlinks(),
         vec![vec!["/a".to_string(), "/b".to_string()]]
@@ -241,7 +241,7 @@ fn standalone_and_package_builders_share_payload_results() -> Result<(), Box<dyn
         ordinary.with_file_contents(b"content".to_vec(), FileOptions::new("/file"))?;
         let package = ordinary.build()?;
         assert_eq!(result.compressed_payload, package.payload);
-        for entry in result.derived_header_entries() {
+        for entry in result.rebuild_header_entries() {
             assert_eq!(
                 package.metadata.header.entry(entry.tag)?,
                 entry.data,
@@ -274,7 +274,7 @@ fn raw_rebuild_replaces_stale_derived_tags_but_preserves_editable_ones()
         IndexTag::RPMTAG_FILEDIGESTS as u32,
         IndexData::StringArray(vec!["stale".into()]),
     );
-    result.replace_derived_entries(&mut editor);
+    result.apply_to_header(&mut editor);
     let header = editor.build();
     assert!(!header.entry_is_present(IndexTag::RPMTAG_PAYLOADCOMPRESSOR));
     assert_eq!(
@@ -362,7 +362,7 @@ fn standalone_payload_respects_gzip_and_sha3_file_digest() -> Result<(), Box<dyn
     let result = builder.build()?;
     assert!(result.compressed_payload.starts_with(&[0x1f, 0x8b]));
     assert_eq!(
-        result.files[0].digest,
+        result.files()[0].digest,
         hex::encode(sha3::Sha3_256::digest(b"bytes"))
     );
     assert_eq!(

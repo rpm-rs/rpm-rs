@@ -534,6 +534,9 @@ pub fn signature_tag_name(tag: u32) -> String {
 }
 
 /// Parse a main-header tag name or a numeric `#<tag>` name.
+///
+/// Named lookups scan the numeric tag range and allocate names; consider a
+/// direct name lookup if this becomes hot for large headers.
 pub fn parse_main_tag_name(name: &str) -> Option<u32> {
     if let Some(number) = name.strip_prefix('#') {
         return number.parse().ok();
@@ -542,6 +545,9 @@ pub fn parse_main_tag_name(name: &str) -> Option<u32> {
 }
 
 /// Parse a signature-header tag name or a numeric `#<tag>` name.
+///
+/// Named lookups scan the numeric tag range and allocate names; consider a
+/// direct name lookup if this becomes hot for large headers.
 pub fn parse_signature_tag_name(name: &str) -> Option<u32> {
     if let Some(number) = name.strip_prefix('#') {
         return number.parse().ok();

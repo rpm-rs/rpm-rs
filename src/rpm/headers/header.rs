@@ -26,12 +26,14 @@ where
 {
     /// Construct a header from raw tag numbers and values.
     ///
-    /// The header region tag is generated automatically. This makes it possible
-    /// to rebuild headers containing tags that rpm-rs does not know about while
-    /// still producing a valid immutable-region record.
+    /// The header region tag is generated automatically; supplied region records
+    /// are discarded. Tags outside the region-tag range are retained.
+    /// This makes it possible to rebuild headers containing tags that rpm-rs
+    /// does not know about while producing one valid region record.
     pub fn from_entries(entries: impl IntoIterator<Item = HeaderEntry>, region_tag: T) -> Self {
         let entries = entries
             .into_iter()
+            .filter(|entry| !super::is_region_tag(entry.tag))
             .map(|entry| IndexEntry::new_raw(entry.tag, entry.data))
             .collect();
         Self::from_index_entries(entries, region_tag)
@@ -702,7 +704,7 @@ pub struct FileEntry<'a> {
     pub(crate) group: Cow<'a, str>,
     /// Clocks the last access time.
     pub(crate) modified_at: Timestamp,
-    /// The size of this file, dirs have the inode size (which is insane)
+    /// The size recorded in the header; directory sizes may reflect inode size.
     pub(crate) size: usize,
     /// Flags describing the file or directory into three groups.
     pub(crate) flags: FileFlags,
@@ -762,7 +764,11 @@ impl<'a> FileEntry<'a> {
         self.modified_at
     }
 
-    /// Returns the size of this file in bytes.
+    /// Returns the file size recorded in the RPM header.
+    ///
+    /// This is not necessarily the size of its payload data. A `%ghost` file
+    /// present in the buildroot can have a nonzero size but no payload entry;
+    /// earlier members of a hardlink set can likewise have no payload bytes.
     pub fn size(&self) -> usize {
         self.size
     }
@@ -1206,6 +1212,7 @@ impl IndexData {
 mod test {
     use super::*;
 
+    /// The generated region record parses with the expected tag, type, and offset.
     #[test]
     fn test_region_tag() -> Result<(), Box<dyn std::error::Error>> {
         let region_entry = Header::create_region_tag(IndexSignatureTag::HEADER_SIGNATURES, 2, 400);
@@ -1227,6 +1234,36 @@ mod test {
         Ok(())
     }
 
+    /// Region records are regenerated while ordinary raw tags survive.
+    #[test]
+    fn from_entries_regenerates_existing_region_record() -> Result<(), Error> {
+        let header = Header::from_entries(
+            [
+                HeaderEntry::new(HEADER_IMAGE, IndexData::Bin(vec![0])),
+                HeaderEntry::new(HEADER_SIGNATURES, IndexData::Bin(vec![0])),
+                HeaderEntry::new(
+                    HEADER_IMMUTABLE,
+                    IndexData::Bin(vec![0; INDEX_ENTRY_SIZE as usize]),
+                ),
+                HeaderEntry::new(65000, IndexData::Bin(vec![3, 4])),
+            ],
+            IndexTag::RPMTAG_HEADERIMMUTABLE,
+        );
+        assert_eq!(
+            header
+                .get_all_entries()?
+                .iter()
+                .filter(|(tag, _)| *tag == HEADER_IMMUTABLE)
+                .count(),
+            1
+        );
+        assert_eq!(header.entry(65000u32)?, IndexData::Bin(vec![3, 4]));
+        assert!(!header.entry_is_present(HEADER_IMAGE));
+        assert!(!header.entry_is_present(HEADER_SIGNATURES));
+        Ok(())
+    }
+
+    /// Constructing a header sorts its entries by tag number.
     #[test]
     fn test_from_entries_sorts_tags() {
         // Create entries in non-sorted order

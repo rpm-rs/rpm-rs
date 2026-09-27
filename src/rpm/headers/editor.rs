@@ -28,16 +28,14 @@ impl<T: Tag> HeaderEditor<T> {
     pub fn from_header(header: &Header<T>, region_tag: T) -> Result<Self, Error> {
         let mut editor = Self::new(region_tag);
         for (tag, data) in header.get_all_entries()? {
-            if tag != region_tag.to_u32() && tag != crate::constants::HEADER_REGIONS {
-                editor.upsert(tag, data);
-            }
+            editor.upsert(tag, data);
         }
         Ok(editor)
     }
 
-    /// Insert or replace one tag value; the region tag is always regenerated.
+    /// Insert or replace one tag value; generated region tags are ignored.
     pub fn upsert(&mut self, tag: u32, data: IndexData) -> &mut Self {
-        if tag != self.region_tag.to_u32() {
+        if !super::is_region_tag(tag) {
             self.entries.insert(tag, HeaderEntry::new(tag, data));
         }
         self
@@ -59,5 +57,81 @@ impl<T: Tag> HeaderEditor<T> {
     /// Construct the header and regenerate its immutable-region record.
     pub fn build(self) -> Header<T> {
         Header::from_entries(self.entries.into_values(), self.region_tag)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::IndexTag;
+    use std::io::Cursor;
+
+    /// All raw index value types survive serialization with one regenerated region entry.
+    #[test]
+    fn raw_entries_round_trip_every_value_type_and_regenerate_region() -> Result<(), Error> {
+        let entries = vec![
+            HeaderEntry::new(20000, IndexData::Null),
+            HeaderEntry::new(20001, IndexData::Char(vec![1, 2])),
+            HeaderEntry::new(20002, IndexData::Int8(vec![3, 4])),
+            HeaderEntry::new(20003, IndexData::Int16(vec![5, 6])),
+            HeaderEntry::new(20004, IndexData::Int32(vec![7, 8])),
+            HeaderEntry::new(20005, IndexData::Int64(vec![9, 10])),
+            HeaderEntry::new(20006, IndexData::StringTag("text".into())),
+            HeaderEntry::new(20007, IndexData::Bin(vec![0, 255])),
+            HeaderEntry::new(20008, IndexData::StringArray(vec!["a".into(), "b".into()])),
+            HeaderEntry::new(20009, IndexData::I18NString(vec!["translated".into()])),
+        ];
+        let mut editor = HeaderEditor::new(IndexTag::RPMTAG_HEADERIMMUTABLE);
+        editor.extend(entries.clone());
+        for tag in [
+            crate::constants::HEADER_IMMUTABLE,
+            crate::constants::HEADER_SIGNATURES,
+        ] {
+            editor.upsert(tag, IndexData::Bin(vec![0]));
+        }
+        let header = editor.build();
+        let mut bytes = Vec::new();
+        header.write(&mut bytes)?;
+        let parsed = Header::<IndexTag>::parse(&mut Cursor::new(bytes))?;
+        let actual = parsed.get_all_entries()?;
+        assert_eq!(
+            actual
+                .iter()
+                .filter(|(tag, _)| *tag == crate::constants::HEADER_IMMUTABLE)
+                .count(),
+            1
+        );
+        assert_eq!(
+            actual
+                .into_iter()
+                .filter(|(tag, _)| *tag != crate::constants::HEADER_IMMUTABLE)
+                .collect::<Vec<_>>(),
+            entries
+                .into_iter()
+                .map(|entry| (entry.tag, entry.data))
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    /// Editing known tags leaves unknown tags in a parsed header untouched.
+    #[test]
+    fn editing_a_parsed_header_preserves_unknown_tags() -> Result<(), Error> {
+        let original = Header::from_entries(
+            [HeaderEntry::new(65000, IndexData::Bin(vec![3, 2, 1]))],
+            IndexTag::RPMTAG_HEADERIMMUTABLE,
+        );
+        let mut editor = HeaderEditor::from_header(&original, IndexTag::RPMTAG_HEADERIMMUTABLE)?;
+        editor.upsert(
+            IndexTag::RPMTAG_NAME as u32,
+            IndexData::StringTag("new".into()),
+        );
+        let header = editor.build();
+        assert_eq!(header.entry(65000u32)?, IndexData::Bin(vec![3, 2, 1]));
+        assert_eq!(
+            header.entry(IndexTag::RPMTAG_NAME)?,
+            IndexData::StringTag("new".into())
+        );
+        Ok(())
     }
 }

@@ -11,7 +11,6 @@ pub(super) struct FileStaging {
     // Header file entries are sorted by path; hardlink sets may require a
     // different CPIO order so their completing member carries the bytes.
     pub(super) files: BTreeMap<String, PackageFileEntry>,
-    pub(super) directories: BTreeSet<String>,
     /// Default ownership and permissions for regular files (like `%defattr`).
     pub(super) default_file_attrs: FileDefaults,
     /// Default ownership and permissions for directories (like `%defattr`).
@@ -599,8 +598,6 @@ impl FileStaging {
             hardlink_identity: options.hardlink_identity,
             bulk_added: bulk,
         };
-
-        self.directories.insert(dir);
 
         #[cfg(unix)]
         if should_track_identity {

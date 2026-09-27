@@ -110,6 +110,11 @@ impl PayloadBuilder {
 }
 
 impl PayloadBuildResult {
+    /// Return the resolved files in RPM header order.
+    pub fn files(&self) -> &[BuiltFile] {
+        &self.files
+    }
+
     /// Return groups of regular file paths sharing a package device and inode.
     pub fn hardlinks(&self) -> Vec<Vec<String>> {
         let mut groups = BTreeMap::<(u32, u32), Vec<String>>::new();
@@ -128,10 +133,12 @@ impl PayloadBuildResult {
             .collect()
     }
 
-    /// Generate only the file-list and size tags owned by the payload builder.
+    /// Generate complete file tags from the resolved staging options and payload.
     ///
-    /// Other positional arrays, including file class, color, language and
-    /// dependency metadata, remain under the caller's control.
+    /// This includes editable values such as modes, mtimes, owners, and flags
+    /// selected before building. It also supplies empty default file languages
+    /// for ordinary new packages. Other positional arrays, including file class,
+    /// color, and dependency metadata, remain under the caller's control.
     pub fn file_header_entries(&self) -> Vec<HeaderEntry> {
         let mut entries = Vec::new();
         let large = self.format != RpmFormat::V4 || self.installed_size > u32::MAX as u64;
@@ -172,6 +179,7 @@ impl PayloadBuildResult {
                     IndexTag::RPMTAG_FILEMODES as u32,
                     IndexData::Int16(self.files.iter().map(|file| file.mode.raw_mode()).collect()),
                 ),
+                // st_rdev only applies to device nodes, which this builder rejects.
                 HeaderEntry::new(
                     IndexTag::RPMTAG_FILERDEVS as u32,
                     IndexData::Int16(vec![0; self.files.len()]),
@@ -265,6 +273,8 @@ impl PayloadBuildResult {
 
     /// Generate payload digest, compressor, and format tags from the built bytes.
     pub fn payload_header_entries(&self) -> Vec<HeaderEntry> {
+        // RPM uses string arrays for the older SHA-256 payload tags, but plain
+        // strings for the newer SHA-512 and SHA3-256 tags.
         let mut entries = vec![
             HeaderEntry::new(
                 IndexTag::RPMTAG_PAYLOADSHA256 as u32,
@@ -274,12 +284,14 @@ impl PayloadBuildResult {
                 IndexTag::RPMTAG_PAYLOADSHA256ALT as u32,
                 IndexData::StringArray(vec![self.archive_digests.sha256.clone()]),
             ),
+            // rpmbuild writes PAYLOADFLAGS even for an uncompressed payload.
             HeaderEntry::new(
                 IndexTag::RPMTAG_PAYLOADFLAGS as u32,
                 IndexData::StringTag(self.compression_flags.clone()),
             ),
         ];
         if self.format == RpmFormat::V4 {
+            // PAYLOADSHA256ALGO is obsolete and is omitted from v6 packages.
             entries.push(HeaderEntry::new(
                 IndexTag::RPMTAG_PAYLOADSHA256ALGO as u32,
                 IndexData::Int32(vec![DigestAlgorithm::Sha2_256 as u32]),
@@ -323,8 +335,11 @@ impl PayloadBuildResult {
         entries
     }
 
-    /// Generate every header tag which must be replaced after rebuilding a payload.
-    pub fn derived_header_entries(&self) -> Vec<HeaderEntry> {
+    /// Generate the file and payload tags to apply when rebuilding a package.
+    ///
+    /// Editable file metadata comes from staging options, not prior header
+    /// values. File languages and unrelated positional arrays remain with the caller.
+    pub fn rebuild_header_entries(&self) -> Vec<HeaderEntry> {
         // Language arrays are editable metadata. PackageBuilder emits empty
         // defaults, but a raw-header caller must keep or remap its own values.
         let mut entries = self
@@ -337,11 +352,13 @@ impl PayloadBuildResult {
         entries
     }
 
-    /// Replace stale payload-owned tags in a raw main-header editor.
+    /// Replace file and payload tags in a raw main-header editor.
     ///
+    /// File metadata is taken from the options used to stage each file. Apply
+    /// edits there before building, since v4 CPIO also stores modes and mtimes.
     /// This leaves unrelated and unknown tags alone. The caller must update
     /// other positional arrays when the file list's membership or order changes.
-    pub fn replace_derived_entries(&self, editor: &mut HeaderEditor<IndexTag>) {
+    pub fn apply_to_header(&self, editor: &mut HeaderEditor<IndexTag>) {
         use IndexTag::*;
         for tag in [
             RPMTAG_SIZE,
@@ -381,7 +398,7 @@ impl PayloadBuildResult {
         ] {
             editor.remove(tag as u32);
         }
-        editor.extend(self.derived_header_entries());
+        editor.extend(self.rebuild_header_entries());
     }
 }
 
@@ -464,6 +481,7 @@ impl FileStaging {
                 verify_flags,
                 user: entry.user.clone(),
                 group: entry.group.clone(),
+                // Ghosts have no backing file, so their synthetic st_dev is zero.
                 device: if ghost { 0 } else { 1 },
                 inode: member.map_or(inode, |member| member.inode),
                 caps: entry.caps.clone(),
