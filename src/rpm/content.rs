@@ -221,6 +221,9 @@ impl Package {
     ///
     /// **Unix**: All symbolic links are created regardless of whether their target exists.
     ///
+    /// Device nodes, FIFOs, and sockets are not created during extraction. Their metadata remains
+    /// available through [`PackageMetadata::get_file_entries()`].
+    ///
     /// # Examples
     ///
     /// ```text
@@ -307,7 +310,7 @@ impl Package {
                     }
                     symlink(file_entry.linkto().unwrap_or(""), &file_path)?;
                 }
-                // Skip file types we don't handle (e.g. device nodes, FIFOs, sockets)
+                // Skip special file types (e.g. device nodes, FIFOs, sockets) during extraction.
                 _ => {}
             }
         }
@@ -797,6 +800,7 @@ mod test_payload_layout {
             language: None,
             modified_at: Timestamp(0),
             size,
+            rdev: 0,
             flags,
             digest: None,
             caps: None,
@@ -918,6 +922,10 @@ mod test_payload_integration {
             pub const RPM_FILE_TYPES: &str = concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/assets/RPMS/v6/rpm-file-types-1.0-1.noarch.rpm"
+            );
+            pub const RPM_SPECIAL_FILES: &str = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/assets/RPMS/v6/rpm-special-files-1.0-1.noarch.rpm"
             );
             pub const RPM_HARDLINKS: &str = concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -1172,6 +1180,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[0].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::CONFIG,
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[0].content().unwrap_or_default())),
@@ -1196,6 +1205,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[1].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[1].content().unwrap_or_default())),
@@ -1219,6 +1229,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[2].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: None,
@@ -1239,6 +1250,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[3].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: None,
@@ -1260,6 +1272,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[4].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[4].content().unwrap_or_default())),
@@ -1284,6 +1297,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[5].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[5].content().unwrap_or_default())),
@@ -1307,6 +1321,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[6].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: None,
@@ -1332,6 +1347,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[7].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::DOC,
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[7].content().unwrap_or_default())),
@@ -1356,6 +1372,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[8].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[8].content().unwrap_or_default())),
@@ -1379,6 +1396,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[9].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::GHOST,
                 digest: None,
                 caps: None,
@@ -1399,6 +1417,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[10].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: None,
@@ -1573,6 +1592,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[0].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: Some(Cow::from("")),
@@ -1594,6 +1614,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[1].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::ARTIFACT,
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[1].content().unwrap_or_default())),
@@ -1618,6 +1639,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[2].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::CONFIG,
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[2].content().unwrap_or_default())),
@@ -1645,6 +1667,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[3].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::CONFIG | FileFlags::NOREPLACE,
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[3].content().unwrap_or_default())),
@@ -1672,6 +1695,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[4].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[4].content().unwrap_or_default())),
@@ -1695,6 +1719,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[5].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: Some(Cow::from("")),
@@ -1716,6 +1741,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: files[6].content().unwrap_or_default().len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[6].content().unwrap_or_default())),
@@ -1740,6 +1766,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 4,
+                rdev: 0,
                 flags: FileFlags::DOC,
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[7].content().unwrap_or_default())),
@@ -1763,6 +1790,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 11,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[8].content().unwrap_or_default())),
@@ -1786,6 +1814,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 12,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[9].content().unwrap_or_default())),
@@ -1809,6 +1838,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 15,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[10].content().unwrap_or_default())),
@@ -1835,6 +1865,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 26,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[11].content().unwrap_or_default())),
@@ -1857,6 +1888,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 0,
+                rdev: 0,
                 flags: FileFlags::GHOST,
                 digest: None,
                 caps: Some(Cow::from("")),
@@ -1879,6 +1911,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 8,
+                rdev: 0,
                 flags: FileFlags::LICENSE,
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[13].content().unwrap_or_default())),
@@ -1902,6 +1935,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 10,
+                rdev: 0,
                 flags: FileFlags::MISSINGOK,
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[14].content().unwrap_or_default())),
@@ -1925,6 +1959,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 7,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[15].content().unwrap_or_default())),
@@ -1948,6 +1983,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 7,
+                rdev: 0,
                 flags: FileFlags::README,
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[16].content().unwrap_or_default())),
@@ -1971,6 +2007,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 6,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: Some(Cow::from("")),
@@ -1994,6 +2031,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 0,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: Some(Cow::from("")),
@@ -2016,6 +2054,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 6,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
                 caps: Some(Cow::from("")),
@@ -2040,6 +2079,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 11,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[20].content().unwrap_or_default())),
@@ -2063,6 +2103,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 12,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[21].content().unwrap_or_default())),
@@ -2086,6 +2127,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 11,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[22].content().unwrap_or_default())),
@@ -2109,6 +2151,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 12,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[23].content().unwrap_or_default())),
@@ -2132,6 +2175,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 10,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[24].content().unwrap_or_default())),
@@ -2160,6 +2204,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: expected_sysusers.len(),
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[25].content().unwrap_or_default())),
@@ -2215,6 +2260,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 0,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[0].content().unwrap_or_default())),
@@ -2242,6 +2288,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 31,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[1].content().unwrap_or_default())),
@@ -2272,6 +2319,7 @@ mod test_payload_integration {
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                 size: 2017,
+                rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
                     digest: Cow::from(calculate_sha256(files[2].content().unwrap_or_default())),
@@ -2294,6 +2342,37 @@ mod test_payload_integration {
             &files[2].content().unwrap_or_default()[0..8],
             b"\x89PNG\r\n\x1a\n"
         );
+
+        Ok(())
+    }
+
+    /// Inspect special-file payload records but do not create special filesystem objects.
+    #[test]
+    fn test_special_files_are_not_extracted() -> Result<(), Box<dyn std::error::Error>> {
+        let package = Package::open(pkgs::v6::RPM_SPECIAL_FILES)?;
+        let files = assert_file_apis_consistent(&package)?;
+
+        assert_eq!(files.len(), 3);
+        assert!(files.iter().all(|file| {
+            file.has_payload() && file.content().is_some_and(|content| content.is_empty())
+        }));
+
+        let temp_dir = tempfile::tempdir()?;
+        let extract_path = temp_dir.path().join("rpm-special-files");
+        package.extract(&extract_path)?;
+
+        assert!(extract_path.join("dev").is_dir());
+        assert!(extract_path.join("run").is_dir());
+        for path in [
+            "dev/rpm-special-files-null",
+            "dev/rpm-special-files-loop",
+            "run/rpm-special-files.fifo",
+        ] {
+            assert!(
+                extract_path.join(path).symlink_metadata().is_err(),
+                "special file {path} should not be extracted"
+            );
+        }
 
         Ok(())
     }
@@ -2336,6 +2415,7 @@ mod test_payload_integration {
                     language: Some(Cow::from("")),
                     modified_at: Timestamp(FIXTURE_SOURCE_DATE),
                     size: 162,
+                    rdev: 0,
                     flags: FileFlags::SPECFILE,
                     digest: Some(FileDigest {
                         digest: Cow::from(calculate_sha256(files[0].content().unwrap_or_default())),
@@ -2368,6 +2448,7 @@ mod test_payload_integration {
             pkgs::v6::RPM_BASIC,
             pkgs::v6::RPM_FILE_ATTRS,
             pkgs::v6::RPM_FILE_TYPES,
+            pkgs::v6::RPM_SPECIAL_FILES,
             pkgs::v6::RPM_HARDLINKS,
         ] {
             let package = Package::open(path)?;
@@ -2379,7 +2460,7 @@ mod test_payload_integration {
             while let Some(mut file) = reader.next_file()? {
                 let mut content = Vec::new();
                 file.read_to_end(&mut content)?;
-                actual.push((file.metadata.path().to_owned(), content));
+                actual.push((file.metadata.path().to_owned(), content, file.has_payload()));
             }
 
             assert_eq!(
@@ -2387,7 +2468,7 @@ mod test_payload_integration {
                 expected.len(),
                 "file count mismatch for {path}"
             );
-            for (i, ((actual_path, actual_content), expected_file)) in
+            for (i, ((actual_path, actual_content, actual_has_payload), expected_file)) in
                 actual.iter().zip(&expected).enumerate()
             {
                 assert_eq!(
@@ -2399,6 +2480,12 @@ mod test_payload_integration {
                     actual_content,
                     expected_file.content.as_deref().unwrap_or_default(),
                     "content mismatch for {}",
+                    actual_path.display()
+                );
+                assert_eq!(
+                    *actual_has_payload,
+                    expected_file.has_payload(),
+                    "payload presence mismatch for {}",
                     actual_path.display()
                 );
             }

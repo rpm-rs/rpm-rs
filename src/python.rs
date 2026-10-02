@@ -108,13 +108,17 @@ impl PyDigestAlgorithm {
 // FileType
 // ---------------------------------------------------------------------------
 
-/// The type of a file entry: regular, directory, symlink, or other.
+/// The type of a file entry.
 #[pyclass(name = "FileType", eq, eq_int, hash, frozen, from_py_object)]
 #[derive(Clone, PartialEq, Hash)]
 pub enum PyFileType {
     Regular,
     Dir,
     SymbolicLink,
+    Fifo,
+    CharacterDevice,
+    BlockDevice,
+    Socket,
     Other,
 }
 
@@ -125,6 +129,10 @@ impl PyFileType {
             PyFileType::Regular => "FileType.Regular",
             PyFileType::Dir => "FileType.Dir",
             PyFileType::SymbolicLink => "FileType.SymbolicLink",
+            PyFileType::Fifo => "FileType.Fifo",
+            PyFileType::CharacterDevice => "FileType.CharacterDevice",
+            PyFileType::BlockDevice => "FileType.BlockDevice",
+            PyFileType::Socket => "FileType.Socket",
             PyFileType::Other => "FileType.Other",
         }
     }
@@ -136,6 +144,10 @@ impl From<crate::FileType> for PyFileType {
             crate::FileType::Regular => PyFileType::Regular,
             crate::FileType::Dir => PyFileType::Dir,
             crate::FileType::SymbolicLink => PyFileType::SymbolicLink,
+            crate::FileType::Fifo => PyFileType::Fifo,
+            crate::FileType::CharacterDevice => PyFileType::CharacterDevice,
+            crate::FileType::BlockDevice => PyFileType::BlockDevice,
+            crate::FileType::Socket => PyFileType::Socket,
             crate::FileType::Other => PyFileType::Other,
         }
     }
@@ -273,6 +285,27 @@ impl PyFileEntry {
     #[getter]
     fn size(&self) -> usize {
         self.0.size()
+    }
+
+    /// Packed device number from the RPM FILERDEVS tag.
+    ///
+    /// RPM stores the major number in the high byte and the minor number in the low byte. This is
+    /// zero for file types without a device number.
+    #[getter]
+    fn rdev(&self) -> u16 {
+        self.0.rdev()
+    }
+
+    /// Device major number from the high byte of RPM's 16-bit FILERDEVS value.
+    #[getter]
+    fn rdev_major(&self) -> u8 {
+        self.0.rdev_major()
+    }
+
+    /// Device minor number from the low byte of RPM's 16-bit FILERDEVS value.
+    #[getter]
+    fn rdev_minor(&self) -> u8 {
+        self.0.rdev_minor()
     }
 
     /// File flags as a `FileFlags` IntFlag value (DOC, CONFIG, GHOST, LICENSE, etc.).
@@ -2086,8 +2119,15 @@ impl PyBuildConfig {
 /// - `FileOptions.new(path, ...)` for regular files
 /// - `FileOptions.dir(path, ...)` for directories
 /// - `FileOptions.symlink(path, target, ...)` for symbolic links
+/// - `FileOptions.fifo(path, ...)` for FIFOs
+/// - `FileOptions.character_device(path, major, minor, ...)` for character devices
+/// - `FileOptions.block_device(path, major, minor, ...)` for block devices
+/// - `FileOptions.socket(path, ...)` for sockets
 /// - `FileOptions.ghost(path, ...)` for ghost files
 /// - `FileOptions.ghost_dir(path, ...)` for ghost directories
+///
+/// Device `major` and `minor` arguments follow RPM's `%dev` convention. Each is an unsigned
+/// 8-bit value from 0 through 255, stored together in RPM's 16-bit FILERDEVS tag.
 ///
 /// Common keyword arguments (all optional):
 ///     user: Owning user name.
@@ -2317,6 +2357,126 @@ impl PyFileOptions {
         .map(|b| PyFileOptions(Some(b)))
         .map_err(to_pyerr)
     }
+
+    /// Create options for a FIFO entry.
+    #[staticmethod]
+    #[pyo3(signature = (dest, *, user=None, group=None, permissions=None))]
+    fn fifo(
+        dest: &str,
+        user: Option<&str>,
+        group: Option<&str>,
+        permissions: Option<u16>,
+    ) -> PyResult<Self> {
+        apply_file_options(
+            crate::FileOptions::fifo(dest),
+            user,
+            group,
+            permissions,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+        )
+        .map(|b| PyFileOptions(Some(b)))
+        .map_err(to_pyerr)
+    }
+
+    /// Create options for a character device entry.
+    ///
+    /// `major` and `minor` follow RPM's `%dev` convention and must each be from 0 through 255.
+    #[staticmethod]
+    #[pyo3(signature = (dest, major, minor, *, user=None, group=None, permissions=None))]
+    fn character_device(
+        dest: &str,
+        major: u8,
+        minor: u8,
+        user: Option<&str>,
+        group: Option<&str>,
+        permissions: Option<u16>,
+    ) -> PyResult<Self> {
+        apply_file_options(
+            crate::FileOptions::character_device(dest, major, minor),
+            user,
+            group,
+            permissions,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+        )
+        .map(|b| PyFileOptions(Some(b)))
+        .map_err(to_pyerr)
+    }
+
+    /// Create options for a block device entry.
+    ///
+    /// `major` and `minor` follow RPM's `%dev` convention and must each be from 0 through 255.
+    #[staticmethod]
+    #[pyo3(signature = (dest, major, minor, *, user=None, group=None, permissions=None))]
+    fn block_device(
+        dest: &str,
+        major: u8,
+        minor: u8,
+        user: Option<&str>,
+        group: Option<&str>,
+        permissions: Option<u16>,
+    ) -> PyResult<Self> {
+        apply_file_options(
+            crate::FileOptions::block_device(dest, major, minor),
+            user,
+            group,
+            permissions,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+        )
+        .map(|b| PyFileOptions(Some(b)))
+        .map_err(to_pyerr)
+    }
+
+    /// Create options for a socket entry.
+    #[staticmethod]
+    #[pyo3(signature = (dest, *, user=None, group=None, permissions=None))]
+    fn socket(
+        dest: &str,
+        user: Option<&str>,
+        group: Option<&str>,
+        permissions: Option<u16>,
+    ) -> PyResult<Self> {
+        apply_file_options(
+            crate::FileOptions::socket(dest),
+            user,
+            group,
+            permissions,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+        )
+        .map(|b| PyFileOptions(Some(b)))
+        .map_err(to_pyerr)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2450,6 +2610,12 @@ impl PyPackageBuilder {
     /// Add a symbolic link entry.
     fn with_symlink(&mut self, options: &mut PyFileOptions) -> PyResult<()> {
         self.0.with_symlink(options.take()).map_err(to_pyerr)?;
+        Ok(())
+    }
+
+    /// Add a FIFO, device, or socket entry.
+    fn with_special_file(&mut self, options: &mut PyFileOptions) -> PyResult<()> {
+        self.0.with_special_file(options.take()).map_err(to_pyerr)?;
         Ok(())
     }
 

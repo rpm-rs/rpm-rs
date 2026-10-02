@@ -372,6 +372,11 @@ let pkg = rpm::PackageBuilder::new("test", "1.0.0", "MIT", "x86_64", "some aweso
     .with_symlink(
         rpm::FileOptions::symlink("/usr/bin/awesome_link", "/usr/bin/awesome"),
     )?
+    // add a character device, equivalent to %dev(c,1,3). RPM stores each device
+    // major and minor number in eight bits, so each must be between 0 and 255.
+    .with_special_file(
+        rpm::FileOptions::character_device("/dev/awesome-null", 1, 3).permissions(0o600),
+    )?
     // directories can be created with explicit ownership and permissions
     // this does not add any directory contents, just declares a directory
     .with_dir_entry(

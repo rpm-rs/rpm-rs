@@ -710,6 +710,57 @@ fn test_build_rpm_file_types() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Build a package matching the rpm-special-files.spec special-file entries.
+#[test]
+fn test_build_rpm_special_files() -> Result<(), Box<dyn std::error::Error>> {
+    let pkg = PackageBuilder::new(
+        "rpm-special-files",
+        "1.0",
+        "MIT",
+        "noarch",
+        "Test RPM special file metadata",
+    )
+    .using_config(
+        BuildConfig::v6()
+            .compression(CompressionType::None)
+            .source_date(common::FIXTURE_SOURCE_DATE),
+    )
+    .release("1")
+    .description("Test RPM handling of special file metadata.")
+    .add_changelog_entry(
+        "RPM Test <rpm-test@example.com> - 1.0-1",
+        "- Build special file fixture",
+        1_681_041_600, // Sun Apr 9 2023 12:00:00 UTC
+    )
+    .with_special_file(
+        FileOptions::character_device("/dev/rpm-special-files-null", 1, 3)
+            .permissions(0o600)
+            .user("root")
+            .group("root"),
+    )?
+    .with_special_file(
+        FileOptions::block_device("/dev/rpm-special-files-loop", 7, 0)
+            .permissions(0o640)
+            .user("root")
+            .group("root"),
+    )?
+    .with_special_file(
+        FileOptions::fifo("/run/rpm-special-files.fifo")
+            .permissions(0o620)
+            .user("root")
+            .group("root"),
+    )?
+    .build()?;
+
+    let mut buf = Vec::new();
+    pkg.write(&mut buf)?;
+    let parsed = Package::parse(&mut buf.as_slice())?;
+    let fixture = Package::open(common::pkgs::v6::RPM_SPECIAL_FILES)?;
+    assert_packages_match(&parsed, &fixture, "v6")?;
+
+    Ok(())
+}
+
 /// Build a package matching the rpm-scriptlets.spec file.
 ///
 /// Tests scriptlets, triggers, file triggers, and transaction file triggers.

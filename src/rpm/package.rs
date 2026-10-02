@@ -1880,6 +1880,7 @@ struct FileTagArrays<'a> {
     links: Vec<&'a str>,
     caps: Option<Vec<&'a str>>,
     ima_signatures: Option<Vec<&'a str>>,
+    rdevs: Vec<u16>,
     basenames: Vec<&'a str>,
     biject: Vec<u32>,
     dirs: Vec<&'a str>,
@@ -1941,6 +1942,9 @@ impl<'a> FileTagArrays<'a> {
         let links = meta
             .header
             .get_entry_data_as_string_array(IndexTag::RPMTAG_FILELINKTOS)?;
+        let rdevs = meta
+            .header
+            .get_entry_data_as_u16_array(IndexTag::RPMTAG_FILERDEVS)?;
 
         let caps = match meta
             .header
@@ -1991,6 +1995,7 @@ impl<'a> FileTagArrays<'a> {
             || sizes.len() != n_files
             || flags.len() != n_files
             || links.len() != n_files
+            || rdevs.len() != n_files
             || basenames.len() != n_files
             || biject.len() != n_files
         {
@@ -2008,6 +2013,7 @@ impl<'a> FileTagArrays<'a> {
             sizes,
             flags,
             links,
+            rdevs,
             caps,
             ima_signatures,
             basenames,
@@ -2068,6 +2074,7 @@ impl<'a> FileTagArrays<'a> {
                 Some(Cow::Borrowed(self.links[i]))
             },
             ima_signature,
+            rdev: self.rdevs[i],
         })
     }
 }
