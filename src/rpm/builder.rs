@@ -715,6 +715,43 @@ impl PackageBuilder {
         Ok(self)
     }
 
+    /// Add a FIFO, device, or socket entry to the package.
+    ///
+    /// Special entries have no file contents. Construct options with
+    /// [`FileOptions::fifo()`], [`FileOptions::character_device()`],
+    /// [`FileOptions::block_device()`], or [`FileOptions::socket()`].
+    pub fn with_special_file(
+        &mut self,
+        options: impl Into<FileOptions>,
+    ) -> Result<&mut Self, Error> {
+        let options = options.into();
+        if !matches!(
+            options.mode.file_type(),
+            FileType::Fifo | FileType::CharacterDevice | FileType::BlockDevice | FileType::Socket
+        ) {
+            return Err(Error::InvalidFileOptions {
+                method: "with_special_file",
+                reason: "expected FIFO, character-device, block-device, or socket mode",
+            });
+        }
+        if options.flag.contains(FileFlags::GHOST) {
+            return Err(Error::InvalidFileOptions {
+                method: "with_special_file",
+                reason: "ghost special files should use with_ghost() instead",
+            });
+        }
+
+        self.add_data(
+            ContentSource::None,
+            self.config.source_date.unwrap_or(Timestamp::now()),
+            options,
+            false,
+            #[cfg(unix)]
+            None,
+        )?;
+        Ok(self)
+    }
+
     /// Add a ghost file or directory entry to the package.
     ///
     /// Ghost entries are not included in the package payload, but their metadata
@@ -878,8 +915,25 @@ impl PackageBuilder {
                     options.use_default_permissions = false;
                 }
 
+                #[cfg(unix)]
+                if matches!(
+                    options.mode.file_type(),
+                    FileType::CharacterDevice | FileType::BlockDevice
+                ) {
+                    use std::os::unix::fs::MetadataExt;
+                    options.rdev = metadata.rdev() as u16;
+                }
+
+                let source = match options.mode.file_type() {
+                    FileType::Fifo
+                    | FileType::CharacterDevice
+                    | FileType::BlockDevice
+                    | FileType::Socket => ContentSource::None,
+                    _ => ContentSource::Path(entry.path()),
+                };
+
                 self.add_data(
-                    ContentSource::Path(entry.path()),
+                    source,
                     modified_at,
                     options,
                     true,
@@ -1046,6 +1100,7 @@ impl PackageBuilder {
             dir: dir.clone(),
             caps: options.caps,
             verify_flags: options.verify_flags,
+            rdev: options.rdev,
             hardlink_identity: options.hardlink_identity,
             bulk_added: bulk,
         };
@@ -1654,9 +1709,8 @@ impl PackageBuilder {
             file_sizes.push(file_size);
             file_modes.push(entry.mode.into());
             file_caps.push(entry.caps.to_owned());
-            // The device ID that this file *represents* (st_rdev).
-            // Only meaningful for block/character device special files; always 0 otherwise.
-            file_rdevs.push(0);
+            // The device ID that this file represents (st_rdev).
+            file_rdevs.push(entry.rdev);
             // The device ID of the filesystem *containing* the file (st_dev), normalized to 1 or 0.
             // Ghost files have no backing file, so their st_dev is 0.
             file_devices.push(if is_ghost { 0 } else { 1 });
@@ -1741,6 +1795,8 @@ impl PackageBuilder {
                     .mtime(resolved_mtimes[file_index].into())
                     .uid(self.uid.unwrap_or(0))
                     .gid(self.gid.unwrap_or(0))
+                    .rdev_major(u32::from(entry.rdev >> 8))
+                    .rdev_minor(u32::from(entry.rdev & 0xff))
                     .write_cpio(&mut archive, payload_size as u32)
             } else {
                 payload::write_stripped_cpio(&mut archive, file_index as u32, payload_size)

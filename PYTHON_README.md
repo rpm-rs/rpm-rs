@@ -340,6 +340,12 @@ builder.with_symlink(
     FileOptions.symlink("/usr/bin/awesome_link", "/usr/bin/awesome"),
 )
 
+# Add a character device, equivalent to %dev(c,1,3). RPM stores each device
+# major and minor number in eight bits, so each must be between 0 and 255.
+builder.with_special_file(
+    FileOptions.character_device("/dev/awesome-null", 1, 3, permissions=0o600),
+)
+
 # directories can be created with explicit ownership and permissions
 # this does not add any directory contents, just declares a directory
 builder.with_dir_entry(
