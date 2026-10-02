@@ -409,6 +409,45 @@ fn test_build_with_new_file_api() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Build each supported special file type and preserve its mode and device metadata.
+#[test]
+fn test_build_special_files() -> Result<(), Box<dyn std::error::Error>> {
+    let package = PackageBuilder::new("special-files", "1.0", "MIT", "noarch", "special file test")
+        .with_special_file(
+            FileOptions::character_device("/dev/test-null", 1, 3).permissions(0o600),
+        )?
+        .with_special_file(FileOptions::block_device("/dev/test-loop", 7, 0).permissions(0o640))?
+        .with_special_file(FileOptions::fifo("/run/test.fifo").permissions(0o620))?
+        .with_special_file(FileOptions::socket("/run/test.sock").permissions(0o660))?
+        .build()?;
+
+    let entries = package.metadata.get_file_entries()?;
+    for (path, file_type, permissions, rdev) in [
+        ("/dev/test-null", FileType::CharacterDevice, 0o600, 0x0103),
+        ("/dev/test-loop", FileType::BlockDevice, 0o640, 0x0700),
+        ("/run/test.fifo", FileType::Fifo, 0o620, 0),
+        ("/run/test.sock", FileType::Socket, 0o660, 0),
+    ] {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.path() == Path::new(path))
+            .unwrap_or_else(|| panic!("missing {path}"));
+        assert_eq!(entry.file_type(), file_type);
+        assert_eq!(entry.permissions(), permissions);
+        assert_eq!(entry.rdev(), rdev);
+    }
+
+    let payload = package.files()?.collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(payload.len(), 4);
+    assert!(payload.iter().all(|file| file.has_payload()));
+    assert!(
+        payload
+            .iter()
+            .all(|file| file.content().is_some_and(|content| content.is_empty()))
+    );
+    Ok(())
+}
+
 #[test]
 fn root_child_directories_use_canonical_header_and_payload_paths()
 -> Result<(), Box<dyn std::error::Error>> {

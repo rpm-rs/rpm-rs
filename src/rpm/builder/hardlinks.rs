@@ -285,6 +285,7 @@ mod tests {
             dir: "/".to_string(),
             caps: None,
             verify_flags: FileVerifyFlags::ALL_FLAGS,
+            rdev: 0,
             source: ContentSource::Raw(content.as_bytes().to_vec()),
             hardlink_identity: identity.map(str::to_string),
             bulk_added: false,

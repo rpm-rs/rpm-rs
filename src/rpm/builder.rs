@@ -73,6 +73,8 @@ pub struct BuiltFile {
     pub device: u32,
     /// RPM inode identity.
     pub inode: u32,
+    /// Packed major/minor device number stored in RPMTAG_FILERDEVS.
+    pub rdev: u16,
     /// Optional file capabilities.
     pub caps: Option<FileCaps>,
     /// Bytes written for this file's CPIO member; earlier hardlinks carry zero.
@@ -676,6 +678,19 @@ impl PackageBuilder {
     /// ```
     pub fn with_symlink(&mut self, options: impl Into<FileOptions>) -> Result<&mut Self, Error> {
         self.staging.with_symlink(options)?;
+        Ok(self)
+    }
+
+    /// Add a FIFO, device, or socket entry to the package.
+    ///
+    /// Special entries have no file contents. Construct options with
+    /// [`FileOptions::fifo()`], [`FileOptions::character_device()`],
+    /// [`FileOptions::block_device()`], or [`FileOptions::socket()`].
+    pub fn with_special_file(
+        &mut self,
+        options: impl Into<FileOptions>,
+    ) -> Result<&mut Self, Error> {
+        self.staging.with_special_file(options)?;
         Ok(self)
     }
 

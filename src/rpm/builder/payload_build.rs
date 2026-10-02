@@ -79,6 +79,15 @@ impl PayloadBuilder {
         Ok(self)
     }
 
+    /// Stage a FIFO, device, or socket entry.
+    pub fn with_special_file(
+        &mut self,
+        options: impl Into<FileOptions>,
+    ) -> Result<&mut Self, Error> {
+        self.inner.with_special_file(options)?;
+        Ok(self)
+    }
+
     /// Stage a ghost entry, which has no archive member.
     pub fn with_ghost(&mut self, options: impl Into<FileOptions>) -> Result<&mut Self, Error> {
         self.inner.with_ghost(options)?;
@@ -179,10 +188,9 @@ impl PayloadBuildResult {
                     IndexTag::RPMTAG_FILEMODES as u32,
                     IndexData::Int16(self.files.iter().map(|file| file.mode.raw_mode()).collect()),
                 ),
-                // st_rdev only applies to device nodes, which this builder rejects.
                 HeaderEntry::new(
                     IndexTag::RPMTAG_FILERDEVS as u32,
-                    IndexData::Int16(vec![0; self.files.len()]),
+                    IndexData::Int16(self.files.iter().map(|file| file.rdev).collect()),
                 ),
                 HeaderEntry::new(
                     IndexTag::RPMTAG_FILEMTIMES as u32,
@@ -441,7 +449,7 @@ impl FileStaging {
             if mode == FileType::Other {
                 return Err(Error::InvalidFileOptions {
                     method: "PayloadBuilder::build",
-                    reason: "device, FIFO, and socket payload entries are not supported",
+                    reason: "unsupported file type",
                 });
             }
             let size = entry.source.size()?;
@@ -484,6 +492,7 @@ impl FileStaging {
                 // Ghosts have no backing file, so their synthetic st_dev is zero.
                 device: if ghost { 0 } else { 1 },
                 inode: member.map_or(inode, |member| member.inode),
+                rdev: entry.rdev,
                 caps: entry.caps.clone(),
                 payload_size: if !ghost && member.is_none_or(|member| member.has_content) {
                     size
@@ -515,6 +524,8 @@ impl FileStaging {
                     .mtime(file.modified_at.into())
                     .uid(self.uid.unwrap_or(0))
                     .gid(self.gid.unwrap_or(0))
+                    .rdev_major(u32::from(file.rdev >> 8))
+                    .rdev_minor(u32::from(file.rdev & 0xff))
                     .write_cpio(&mut archive, payload_size as u32)
             };
             if payload_size > 0 {
