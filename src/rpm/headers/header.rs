@@ -704,6 +704,8 @@ pub struct FileEntry<'a> {
     pub(crate) modified_at: Timestamp,
     /// The size of this file, dirs have the inode size (which is insane)
     pub(crate) size: usize,
+    /// Packed major/minor device number from RPMTAG_FILERDEVS.
+    pub(crate) rdev: u16,
     /// Flags describing the file or directory into three groups.
     pub(crate) flags: FileFlags,
     // @todo SELinux context? how is that done?
@@ -767,6 +769,24 @@ impl<'a> FileEntry<'a> {
         self.size
     }
 
+    /// Returns the packed device number stored in `RPMTAG_FILERDEVS`.
+    ///
+    /// RPM's `%dev` convention stores the major number in the high byte and the minor number in
+    /// the low byte.
+    pub fn rdev(&self) -> u16 {
+        self.rdev
+    }
+
+    /// Returns the device major number stored for this entry.
+    pub fn rdev_major(&self) -> u8 {
+        (self.rdev >> 8) as u8
+    }
+
+    /// Returns the device minor number stored for this entry.
+    pub fn rdev_minor(&self) -> u8 {
+        self.rdev as u8
+    }
+
     /// Returns the flags describing this file (e.g. config, doc, ghost).
     pub fn flags(&self) -> FileFlags {
         self.flags
@@ -801,6 +821,7 @@ impl<'a> FileEntry<'a> {
             group: Cow::Owned(self.group.into_owned()),
             modified_at: self.modified_at,
             size: self.size,
+            rdev: self.rdev,
             flags: self.flags,
             digest: self.digest.map(FileDigest::into_owned),
             caps: self.caps.map(|c| Cow::Owned(c.into_owned())),
