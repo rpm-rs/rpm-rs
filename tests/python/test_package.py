@@ -6,7 +6,7 @@ from pathlib import Path
 
 from rpm_rs import FileEntry, FileType, Package, PackageMetadata, RpmFile
 
-from conftest import RPM_BASIC, RPM_EMPTY, RPM_FILE_TYPES
+from conftest import RPM_BASIC, RPM_EMPTY, RPM_FILE_TYPES, RPM_SPECIAL_FILES
 
 
 class TestOpen:
@@ -64,6 +64,25 @@ class TestFiles:
         files = pkg.files()
         types = {f.metadata.mode.file_type for f in files}
         assert FileType.Regular in types
+
+    def test_special_file_metadata(self):
+        pkg = Package.open(RPM_SPECIAL_FILES)
+        entries = {entry.path: entry for entry in pkg.metadata.file_entries()}
+
+        char_device = entries["/dev/rpm-special-files-null"]
+        assert char_device.mode.file_type == FileType.CharacterDevice
+        assert char_device.rdev == 0x0103
+        assert (char_device.rdev_major, char_device.rdev_minor) == (1, 3)
+
+        block_device = entries["/dev/rpm-special-files-loop"]
+        assert block_device.mode.file_type == FileType.BlockDevice
+        assert block_device.rdev == 0x0700
+        assert (block_device.rdev_major, block_device.rdev_minor) == (7, 0)
+
+        fifo = entries["/run/rpm-special-files.fifo"]
+        assert fifo.mode.file_type == FileType.Fifo
+        assert fifo.permissions == 0o620
+        assert fifo.rdev == 0
 
     def test_empty_package_no_files(self):
         pkg = Package.open(RPM_EMPTY)

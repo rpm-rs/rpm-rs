@@ -285,12 +285,14 @@ mod tests {
             dir: "/".to_string(),
             caps: None,
             verify_flags: FileVerifyFlags::ALL_FLAGS,
+            rdev: 0,
             source: ContentSource::Raw(content.as_bytes().to_vec()),
             hardlink_identity: identity.map(str::to_string),
             bulk_added: false,
         }
     }
 
+    /// Explicit hardlink identities share an inode and put content on the final member.
     #[test]
     fn plans_shared_identity_and_rpm_payload_order() {
         let files = BTreeMap::from([
@@ -328,6 +330,7 @@ mod tests {
         assert_eq!(plan.installed_size(&files).unwrap(), 14);
     }
 
+    /// Explicit hardlink sets require at least two members with identical content.
     #[test]
     fn rejects_incomplete_or_conflicting_sets() {
         let incomplete =
@@ -353,6 +356,7 @@ mod tests {
         );
     }
 
+    /// Filesystem hardlinks supplement, but do not replace, explicit hardlink sets.
     #[test]
     #[cfg(unix)]
     fn adds_automatic_groups_to_explicit_plan() {
@@ -394,6 +398,7 @@ mod tests {
         assert_eq!(auto1.link_count, 2);
     }
 
+    /// Explicit declarations take precedence over filesystem identity detection.
     #[test]
     #[cfg(unix)]
     fn explicit_takes_precedence_over_automatic_detection() {

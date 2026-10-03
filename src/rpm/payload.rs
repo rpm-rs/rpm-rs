@@ -988,6 +988,7 @@ mod stripped_cpio_tests {
             user: Cow::Borrowed("root"),
             group: Cow::Borrowed("root"),
             modified_at: crate::Timestamp(0),
+            rdev: 0,
             flags: crate::FileFlags::empty(),
             digest: None,
             caps: None,

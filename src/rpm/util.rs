@@ -186,6 +186,7 @@ mod tests {
     mod normalize_path {
         use super::*;
 
+        /// Already normalized absolute and relative paths are unchanged.
         #[test]
         fn test_normalize_path_already_normalized() {
             assert_eq!(normalize_path("/usr/bin/foo"), "/usr/bin/foo");
@@ -194,6 +195,7 @@ mod tests {
             assert_eq!(normalize_path("./foo"), "./foo");
         }
 
+        /// Repeated path separators collapse to one slash.
         #[test]
         fn test_normalize_path_collapse_slashes() {
             assert_eq!(normalize_path("//usr//bin//foo"), "/usr/bin/foo");
@@ -201,6 +203,7 @@ mod tests {
             assert_eq!(normalize_path("/usr///bin////foo"), "/usr/bin/foo");
         }
 
+        /// Trailing slashes are removed without changing the path prefix.
         #[test]
         fn test_normalize_path_strip_trailing_slash() {
             assert_eq!(normalize_path("/usr/bin/"), "/usr/bin");
@@ -209,6 +212,7 @@ mod tests {
             assert_eq!(normalize_path("./foo/"), "./foo");
         }
 
+        /// Repeated and trailing slashes are normalized together.
         #[test]
         fn test_normalize_path_collapse_and_strip() {
             assert_eq!(normalize_path("//usr///bin//foo/"), "/usr/bin/foo");
@@ -220,6 +224,7 @@ mod tests {
     mod reject_control_chars {
         use super::*;
 
+        /// NUL, escape, and other forbidden control characters are rejected.
         #[test]
         fn test_reject_control_chars() {
             // ASCII control characters should be rejected
@@ -242,11 +247,13 @@ mod tests {
             ));
         }
 
+        /// Tab and newline remain valid where control characters are checked.
         #[test]
         fn test_reject_control_chars_allows_tab_and_newline() {
             assert!(reject_control_chars("test", "line1\nline2\ttabbed").is_ok());
         }
 
+        /// Plain text and empty strings pass control-character validation.
         #[test]
         fn test_reject_control_chars_allows_normal_text() {
             assert!(reject_control_chars("test", "hello world").is_ok());
@@ -257,6 +264,7 @@ mod tests {
     mod validate_name {
         use super::*;
 
+        /// Supported package-name punctuation and macros pass validation.
         #[test]
         fn test_validate_name_valid() {
             assert!(validate_name("foo").is_ok());
@@ -268,6 +276,7 @@ mod tests {
             assert!(validate_name("%{name}").is_ok());
         }
 
+        /// Package names must not be empty.
         #[test]
         fn test_validate_name_empty() {
             assert!(matches!(
@@ -276,6 +285,7 @@ mod tests {
             ));
         }
 
+        /// Package names cannot start with a hyphen.
         #[test]
         fn test_validate_name_invalid_first_char() {
             assert!(matches!(
@@ -284,6 +294,7 @@ mod tests {
             ));
         }
 
+        /// Package names reject spaces and unsupported punctuation.
         #[test]
         fn test_validate_name_invalid_chars() {
             assert!(matches!(
@@ -300,6 +311,7 @@ mod tests {
     mod validate_version {
         use super::*;
 
+        /// Version validation accepts ordinary versions and RPM ordering syntax.
         #[test]
         fn test_validate_version_valid() {
             assert!(validate_version("version", "1.0.0").is_ok());
@@ -308,6 +320,7 @@ mod tests {
             assert!(validate_version("version", "1.0+git123").is_ok());
         }
 
+        /// Version strings must not be empty.
         #[test]
         fn test_validate_version_empty() {
             assert!(matches!(
@@ -316,6 +329,7 @@ mod tests {
             ));
         }
 
+        /// Version strings reject spaces and hyphens.
         #[test]
         fn test_validate_version_invalid_chars() {
             // Hyphen not allowed in version (allowed in name)
@@ -329,6 +343,7 @@ mod tests {
             ));
         }
 
+        /// Release validation rejects hyphens as part of the release value.
         #[test]
         fn test_validate_version_release() {
             assert!(matches!(
@@ -342,6 +357,7 @@ mod tests {
         use super::*;
         use std::io::Write;
 
+        /// An empty writer produces the expected digests and byte count.
         #[test]
         fn test_checksumming_writer_empty() {
             let mut buf: Vec<u8> = Vec::new();
@@ -372,6 +388,7 @@ mod tests {
             assert_eq!(len, 0);
         }
 
+        /// Written bytes contribute to each digest and the recorded length.
         #[test]
         fn test_checksumming_writer_with_data() {
             let mut buf: Vec<u8> = Vec::new();
@@ -419,6 +436,7 @@ mod tests {
             }
         }
 
+        /// Short inner writes still hash every byte written by `write_all`.
         #[test]
         fn test_checksumming_writer_short_writes() {
             let data = b"hello world!";

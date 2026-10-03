@@ -21,7 +21,11 @@ pub enum FileType {
     Regular,
     Dir,
     SymbolicLink,
-    /// A file type not directly handled by this library (e.g. block/char devices, FIFOs, sockets).
+    Fifo,
+    CharacterDevice,
+    BlockDevice,
+    Socket,
+    /// A file type not directly handled by this library.
     Other,
 }
 
@@ -34,8 +38,12 @@ pub struct FileMode(u16);
 const FILE_TYPE_BIT_MASK: u16 = 0o170000; // bit representation = "1111000000000000"
 const PERMISSIONS_BIT_MASK: u16 = 0o7777; // bit representation = "0000111111111111"
 pub const REGULAR_FILE_TYPE: u16 = 0o100000; //  bit representation = "1000000000000000"
+pub const FIFO_FILE_TYPE: u16 = 0o010000;
+pub const CHARACTER_DEVICE_FILE_TYPE: u16 = 0o020000;
 pub const DIR_FILE_TYPE: u16 = 0o040000; //      bit representation = "0100000000000000"
+pub const BLOCK_DEVICE_FILE_TYPE: u16 = 0o060000;
 pub const SYMBOLIC_LINK_FILE_TYPE: u16 = 0o120000; // bit representation = "1010000000000000"
+pub const SOCKET_FILE_TYPE: u16 = 0o140000;
 
 impl From<u16> for FileMode {
     fn from(raw_mode: u16) -> Self {
@@ -74,6 +82,26 @@ impl FileMode {
         FileMode(SYMBOLIC_LINK_FILE_TYPE | (permissions & PERMISSIONS_BIT_MASK))
     }
 
+    /// Create a FIFO mode. `permissions` will be masked to 0o7777.
+    pub fn fifo(permissions: u16) -> Self {
+        FileMode(FIFO_FILE_TYPE | (permissions & PERMISSIONS_BIT_MASK))
+    }
+
+    /// Create a character-device mode. `permissions` will be masked to 0o7777.
+    pub fn character_device(permissions: u16) -> Self {
+        FileMode(CHARACTER_DEVICE_FILE_TYPE | (permissions & PERMISSIONS_BIT_MASK))
+    }
+
+    /// Create a block-device mode. `permissions` will be masked to 0o7777.
+    pub fn block_device(permissions: u16) -> Self {
+        FileMode(BLOCK_DEVICE_FILE_TYPE | (permissions & PERMISSIONS_BIT_MASK))
+    }
+
+    /// Create a socket mode. `permissions` will be masked to 0o7777.
+    pub fn socket(permissions: u16) -> Self {
+        FileMode(SOCKET_FILE_TYPE | (permissions & PERMISSIONS_BIT_MASK))
+    }
+
     /// Set the permission bits, preserving the file type. Values greater than 0o7777 will be masked.
     pub fn set_permissions(&mut self, permissions: u16) {
         self.0 = self.raw_file_type() | (permissions & PERMISSIONS_BIT_MASK);
@@ -90,6 +118,10 @@ impl FileMode {
             DIR_FILE_TYPE => FileType::Dir,
             REGULAR_FILE_TYPE => FileType::Regular,
             SYMBOLIC_LINK_FILE_TYPE => FileType::SymbolicLink,
+            FIFO_FILE_TYPE => FileType::Fifo,
+            CHARACTER_DEVICE_FILE_TYPE => FileType::CharacterDevice,
+            BLOCK_DEVICE_FILE_TYPE => FileType::BlockDevice,
+            SOCKET_FILE_TYPE => FileType::Socket,
             _ => FileType::Other,
         }
     }
@@ -131,7 +163,7 @@ mod build_types {
     pub enum ContentSource {
         Path(PathBuf),
         Raw(Vec<u8>),
-        /// No content - used for directories, symlinks, and ghost files
+        /// No content - used for metadata-only entries such as directories and special files.
         None,
     }
 
@@ -166,6 +198,8 @@ mod build_types {
         pub dir: String,
         pub caps: Option<FileCaps>,
         pub verify_flags: FileVerifyFlags,
+        /// Packed major/minor device number stored in RPMTAG_FILERDEVS.
+        pub(crate) rdev: u16,
         pub source: ContentSource,
         /// Explicit package-local identity shared by members of one hardlink set.
         pub(crate) hardlink_identity: Option<String>,
@@ -182,12 +216,15 @@ mod build_types {
         /// `None` means use the builder's default group.
         pub(crate) group: Option<String>,
         pub(crate) symlink: String,
+        /// Override the source file's modification time.
+        pub(crate) modified_at: Option<Timestamp>,
         pub(crate) mode: FileMode,
         pub(crate) flag: FileFlags,
         pub(crate) use_default_permissions: bool,
         pub(crate) caps: Option<FileCaps>,
         pub(crate) verify_flags: FileVerifyFlags,
         pub(crate) hardlink_identity: Option<String>,
+        pub(crate) rdev: u16,
     }
 
     impl FileOptions {
@@ -203,12 +240,14 @@ mod build_types {
                     user: None,
                     group: None,
                     symlink: "".to_string(),
+                    modified_at: None,
                     mode: FileMode::regular(0o644),
                     flag: FileFlags::empty(),
                     use_default_permissions: true,
                     caps: None,
                     verify_flags: FileVerifyFlags::ALL_FLAGS,
                     hardlink_identity: None,
+                    rdev: 0,
                 },
             }
         }
@@ -226,12 +265,14 @@ mod build_types {
                     user: None,
                     group: None,
                     symlink: "".to_string(),
+                    modified_at: None,
                     mode: FileMode::dir(0o755),
                     flag: FileFlags::empty(),
                     use_default_permissions: true,
                     caps: None,
                     verify_flags: FileVerifyFlags::ALL_FLAGS,
                     hardlink_identity: None,
+                    rdev: 0,
                 },
             }
         }
@@ -251,12 +292,14 @@ mod build_types {
                     user: None,
                     group: None,
                     symlink: target.into(),
+                    modified_at: None,
                     mode: FileMode::symbolic_link(0o777),
                     flag: FileFlags::empty(),
                     use_default_permissions: false,
                     caps: None,
                     verify_flags: FileVerifyFlags::ALL_FLAGS,
                     hardlink_identity: None,
+                    rdev: 0,
                 },
             }
         }
@@ -278,6 +321,7 @@ mod build_types {
                     user: None,
                     group: None,
                     symlink: "".to_string(),
+                    modified_at: None,
                     mode: FileMode::regular(0),
                     flag: FileFlags::GHOST,
                     use_default_permissions: true,
@@ -289,6 +333,7 @@ mod build_types {
                             | FileVerifyFlags::LINKTO
                             | FileVerifyFlags::MTIME),
                     hardlink_identity: None,
+                    rdev: 0,
                 },
             }
         }
@@ -308,12 +353,75 @@ mod build_types {
                     user: None,
                     group: None,
                     symlink: "".to_string(),
+                    modified_at: None,
                     mode: FileMode::dir(0o755),
                     flag: FileFlags::GHOST,
                     use_default_permissions: true,
                     caps: None,
                     verify_flags: FileVerifyFlags::ALL_FLAGS,
                     hardlink_identity: None,
+                    rdev: 0,
+                },
+            }
+        }
+
+        /// Create options for a FIFO entry.
+        ///
+        /// Use with [`PackageBuilder::with_special_file()`]. Default permissions are 0o644.
+        pub fn fifo(dest: impl Into<String>) -> FileOptionsBuilder {
+            Self::special(dest, FileMode::fifo(0o644), 0)
+        }
+
+        /// Create options for a character device entry.
+        ///
+        /// Device major and minor numbers follow RPM's `%dev` convention and are each limited
+        /// to eight bits. Use with [`PackageBuilder::with_special_file()`].
+        pub fn character_device(
+            dest: impl Into<String>,
+            major: u8,
+            minor: u8,
+        ) -> FileOptionsBuilder {
+            Self::special(
+                dest,
+                FileMode::character_device(0o644),
+                u16::from(major) << 8 | u16::from(minor),
+            )
+        }
+
+        /// Create options for a block device entry.
+        ///
+        /// Device major and minor numbers follow RPM's `%dev` convention and are each limited
+        /// to eight bits. Use with [`PackageBuilder::with_special_file()`].
+        pub fn block_device(dest: impl Into<String>, major: u8, minor: u8) -> FileOptionsBuilder {
+            Self::special(
+                dest,
+                FileMode::block_device(0o644),
+                u16::from(major) << 8 | u16::from(minor),
+            )
+        }
+
+        /// Create options for a socket entry.
+        ///
+        /// Use with [`PackageBuilder::with_special_file()`]. Default permissions are 0o644.
+        pub fn socket(dest: impl Into<String>) -> FileOptionsBuilder {
+            Self::special(dest, FileMode::socket(0o644), 0)
+        }
+
+        fn special(dest: impl Into<String>, mode: FileMode, rdev: u16) -> FileOptionsBuilder {
+            FileOptionsBuilder {
+                inner: FileOptions {
+                    destination: dest.into(),
+                    user: None,
+                    group: None,
+                    symlink: String::new(),
+                    modified_at: None,
+                    mode,
+                    flag: FileFlags::empty(),
+                    use_default_permissions: true,
+                    caps: None,
+                    verify_flags: FileVerifyFlags::ALL_FLAGS,
+                    hardlink_identity: None,
+                    rdev,
                 },
             }
         }
@@ -325,6 +433,12 @@ mod build_types {
     }
 
     impl FileOptionsBuilder {
+        /// Override the modification time stored for this file entry.
+        pub fn modified_at(mut self, modified_at: Timestamp) -> Self {
+            self.inner.modified_at = Some(modified_at);
+            self
+        }
+
         /// Associate this regular file with an explicitly declared hardlink set.
         ///
         /// Every set identity must be used by at least two regular files. Members
@@ -801,6 +915,7 @@ where
 }
 
 mod test {
+    /// File modes preserve type and mask permissions during conversion and updates.
     #[test]
     fn test_file_mode() -> Result<(), Box<dyn std::error::Error>> {
         use super::*;
@@ -813,6 +928,14 @@ mod test {
             let result = FileMode::regular(permissions);
             assert_eq!(expected, result.permissions());
             let result = FileMode::symbolic_link(permissions);
+            assert_eq!(expected, result.permissions());
+            let result = FileMode::fifo(permissions);
+            assert_eq!(expected, result.permissions());
+            let result = FileMode::character_device(permissions);
+            assert_eq!(expected, result.permissions());
+            let result = FileMode::block_device(permissions);
+            assert_eq!(expected, result.permissions());
+            let result = FileMode::socket(permissions);
             assert_eq!(expected, result.permissions());
         }
 
@@ -879,6 +1002,18 @@ mod test {
                 FileMode::symbolic_link(0o1755),
                 FileType::SymbolicLink,
             ),
+            (0o01_0644, FileMode::fifo(0o644), FileType::Fifo),
+            (
+                0o02_0644,
+                FileMode::character_device(0o644),
+                FileType::CharacterDevice,
+            ),
+            (
+                0o06_0644,
+                FileMode::block_device(0o644),
+                FileType::BlockDevice,
+            ),
+            (0o14_0644, FileMode::socket(0o644), FileType::Socket),
             // unknown file type via From<u16>
             (0o0755, FileMode(0o0755), FileType::Other),
         ];
@@ -891,6 +1026,7 @@ mod test {
         Ok(())
     }
 
+    /// File options accept recognized capability names and flags.
     #[cfg(feature = "payload")]
     #[test]
     fn test_verify_capabilities_valid() {
@@ -898,6 +1034,7 @@ mod test {
         blank_file.caps("cap_net_admin,cap_net_raw+p").unwrap();
     }
 
+    /// File options reject unrecognized capability names.
     #[cfg(feature = "payload")]
     #[test]
     fn test_verify_capabilities_invalid() -> Result<(), crate::errors::Error> {
@@ -906,6 +1043,7 @@ mod test {
         Ok(())
     }
 
+    /// Scriptlet options produce the expected header records.
     #[cfg(feature = "payload")]
     #[test]
     fn test_scriptlet_builder() {

@@ -63,6 +63,10 @@ pub mod pkgs {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/assets/RPMS/v6/rpm-file-types-1.0-1.noarch.rpm"
         );
+        pub const RPM_SPECIAL_FILES: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/assets/RPMS/v6/rpm-special-files-1.0-1.noarch.rpm"
+        );
         pub const RPM_HARDLINKS: &str = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/assets/RPMS/v6/rpm-hardlinks-1.0-1.noarch.rpm"
