@@ -69,6 +69,8 @@ pub struct BuiltFile {
     pub user: String,
     /// Named file group.
     pub group: String,
+    /// Language selection for this file.
+    pub language: String,
     /// Packed major/minor device number stored in `RPMTAG_FILERDEVS`.
     pub rdev: u16,
     /// RPM device identity.
@@ -1784,6 +1786,12 @@ impl PackageBuilder {
                 .into_iter()
                 .map(|entry| IndexEntry::new_raw(entry.tag, entry.data)),
         );
+        if files_len != 0 && built.files.iter().all(|file| file.language.is_empty()) {
+            actual_records.push(IndexEntry::new(
+                IndexTag::RPMTAG_FILELANGS,
+                IndexData::StringArray(vec![String::new(); files_len]),
+            ));
+        }
 
         actual_records.extend([
             IndexEntry::new(
