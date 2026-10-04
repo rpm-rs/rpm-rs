@@ -8,6 +8,7 @@ from rpm_rs import (
     CompressionType,
     FileFlags,
     FileOptions,
+    FileType,
     Package,
     PackageBuilder,
     RpmFormat,
@@ -103,6 +104,24 @@ class TestBuildConfig:
 
 
 class TestFiles:
+    def test_file_languages_round_trip(self):
+        b = PackageBuilder("languages", "1.0", "MIT", "noarch")
+        b.with_file_contents(b"bonjour", FileOptions.new("/a", language="fr|de"))
+        b.with_file_contents(b"plain", FileOptions.new("/b"))
+        b.with_dir_entry(FileOptions.dir("/directory"))
+        b.with_ghost(FileOptions.ghost("/ghost", language=""))
+        pkg = b.build()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "languages.rpm")
+            pkg.write_file(path)
+            entries = Package.open(path).metadata.file_entries()
+        assert [(entry.path, entry.language) for entry in entries] == [
+            ("/a", "fr|de"),
+            ("/b", ""),
+            ("/directory", ""),
+            ("/ghost", ""),
+        ]
+
     def test_with_file(self):
         b = PackageBuilder("test", "1.0", "MIT", "noarch")
         b.with_file(EXAMPLE_CONFIG, FileOptions.new("/etc/test.toml"))
@@ -216,6 +235,25 @@ class TestFiles:
         pkg = b.build()
         paths = pkg.metadata.file_paths()
         assert "/var/run/test.pid" in paths
+
+    def test_with_special_files(self):
+        b = PackageBuilder("test", "1.0", "MIT", "noarch")
+        b.with_special_file(FileOptions.character_device("/dev/test-null", 1, 3))
+        b.with_special_file(FileOptions.block_device("/dev/test-loop", 7, 0))
+        b.with_special_file(FileOptions.fifo("/run/test.fifo"))
+        b.with_special_file(FileOptions.socket("/run/test.sock"))
+        entries = {entry.path: entry for entry in b.build().metadata.file_entries()}
+
+        assert entries["/dev/test-null"].mode.file_type == FileType.CharacterDevice
+        assert entries["/dev/test-null"].rdev == 0x0103
+        assert (entries["/dev/test-null"].rdev_major, entries["/dev/test-null"].rdev_minor) == (1, 3)
+        assert entries["/dev/test-loop"].mode.file_type == FileType.BlockDevice
+        assert entries["/dev/test-loop"].rdev == 0x0700
+        assert (entries["/dev/test-loop"].rdev_major, entries["/dev/test-loop"].rdev_minor) == (7, 0)
+        assert entries["/run/test.fifo"].mode.file_type == FileType.Fifo
+        assert entries["/run/test.fifo"].rdev == 0
+        assert entries["/run/test.sock"].mode.file_type == FileType.Socket
+        assert entries["/run/test.sock"].rdev == 0
 
 
 class TestDependencies:

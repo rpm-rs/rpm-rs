@@ -19,7 +19,7 @@ use std::fmt::Debug;
 use super::Lead;
 use super::headers::*;
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum RpmFormat {
     V4,
     V6,
@@ -275,6 +275,66 @@ pub struct Package {
 }
 
 impl Package {
+    /// Assemble a package from an explicitly constructed main header and payload.
+    ///
+    /// The signature header is always freshly generated. Signature-bearing tags
+    /// in the main header are also removed, while the selected RPM format and
+    /// reserved signature space are retained.
+    #[cfg(feature = "payload")]
+    pub fn assemble(
+        lead: Lead,
+        header: Header<IndexTag>,
+        payload: Vec<u8>,
+        format: RpmFormat,
+        reserved_space: Option<u32>,
+    ) -> Result<Self, Error> {
+        use IndexTag::*;
+        let signature_tags = [
+            RPMTAG_SIGPGP,
+            RPMTAG_SIGGPG,
+            RPMTAG_SIGPGP5,
+            RPMTAG_DSAHEADER,
+            RPMTAG_RSAHEADER,
+            RPMTAG_OPENPGP,
+            RPMTAG_FILESIGNATURES,
+            RPMTAG_FILESIGNATURELENGTH,
+            RPMTAG_VERITYSIGNATURES,
+            RPMTAG_VERITYSIGNATUREALGO,
+        ];
+        let header = if signature_tags
+            .iter()
+            .any(|tag| header.entry_is_present(*tag))
+        {
+            // Rebuild the region as well: its recorded size covers the entries
+            // removed from the main header.
+            let mut editor = HeaderEditor::from_header(&header, RPMTAG_HEADERIMMUTABLE)?;
+            for tag in signature_tags {
+                editor.remove(tag as u32);
+            }
+            editor.build()
+        } else {
+            header
+        };
+        let mut header_bytes = Vec::new();
+        header.write(&mut header_bytes)?;
+        let mut signature = SignatureHeaderBuilder::new()
+            .format(format)
+            .reserved_space(reserved_space)
+            .calculate_digests(&header_bytes);
+        if format == RpmFormat::V4 {
+            signature =
+                signature.set_content_length(header_bytes.len() as u64 + payload.len() as u64);
+        }
+        Ok(Self {
+            metadata: PackageMetadata {
+                lead,
+                signature: signature.build()?,
+                header,
+            },
+            payload,
+        })
+    }
+
     /// Open and parse a file at the provided path as an RPM package
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let rpm_file = fs::File::open(path.as_ref())?;
@@ -1812,6 +1872,7 @@ struct FileTagArrays<'a> {
     modes: Vec<u16>,
     users: Vec<&'a str>,
     groups: Vec<&'a str>,
+    languages: Option<Vec<&'a str>>,
     digests: Vec<&'a str>,
     mtimes: Vec<u32>,
     sizes: Vec<u64>,
@@ -1819,6 +1880,7 @@ struct FileTagArrays<'a> {
     links: Vec<&'a str>,
     caps: Option<Vec<&'a str>>,
     ima_signatures: Option<Vec<&'a str>>,
+    rdevs: Vec<u16>,
     basenames: Vec<&'a str>,
     biject: Vec<u32>,
     dirs: Vec<&'a str>,
@@ -1847,6 +1909,14 @@ impl<'a> FileTagArrays<'a> {
         let groups = meta
             .header
             .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEGROUPNAME)?;
+        let languages = match meta
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILELANGS)
+        {
+            Ok(languages) => Some(languages),
+            Err(Error::TagNotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
         let digests = meta
             .header
             .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEDIGESTS)?;
@@ -1872,6 +1942,9 @@ impl<'a> FileTagArrays<'a> {
         let links = meta
             .header
             .get_entry_data_as_string_array(IndexTag::RPMTAG_FILELINKTOS)?;
+        let rdevs = meta
+            .header
+            .get_entry_data_as_u16_array(IndexTag::RPMTAG_FILERDEVS)?;
 
         let caps = match meta
             .header
@@ -1914,11 +1987,15 @@ impl<'a> FileTagArrays<'a> {
         let n_files = modes.len();
         if users.len() != n_files
             || groups.len() != n_files
+            || languages
+                .as_ref()
+                .is_some_and(|values| values.len() != n_files)
             || digests.len() != n_files
             || mtimes.len() != n_files
             || sizes.len() != n_files
             || flags.len() != n_files
             || links.len() != n_files
+            || rdevs.len() != n_files
             || basenames.len() != n_files
             || biject.len() != n_files
         {
@@ -1930,11 +2007,13 @@ impl<'a> FileTagArrays<'a> {
             modes,
             users,
             groups,
+            languages,
             digests,
             mtimes,
             sizes,
             flags,
             links,
+            rdevs,
             caps,
             ima_signatures,
             basenames,
@@ -1979,6 +2058,10 @@ impl<'a> FileTagArrays<'a> {
             basename: Cow::Borrowed(self.basenames[i]),
             user: Cow::Borrowed(self.users[i]),
             group: Cow::Borrowed(self.groups[i]),
+            language: self
+                .languages
+                .as_ref()
+                .map(|languages| Cow::Borrowed(languages[i])),
             mode: self.modes[i].into(),
             modified_at: crate::Timestamp(self.mtimes[i]),
             digest,
@@ -1991,6 +2074,7 @@ impl<'a> FileTagArrays<'a> {
                 Some(Cow::Borrowed(self.links[i]))
             },
             ima_signature,
+            rdev: self.rdevs[i],
         })
     }
 }

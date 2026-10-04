@@ -188,7 +188,21 @@ fn assert_packages_match(
     fixture: &Package,
     label: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let header_cmp = compare_headers(&parsed.metadata.header, &fixture.metadata.header)?;
+    assert_packages_match_except(parsed, fixture, label, &[])
+}
+
+/// Compare packages while allowing named main-header tags to differ in value.
+#[track_caller]
+fn assert_packages_match_except(
+    parsed: &Package,
+    fixture: &Package,
+    label: &str,
+    allowed_header_value_differences: &[u32],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut header_cmp = compare_headers(&parsed.metadata.header, &fixture.metadata.header)?;
+    header_cmp
+        .value_differences
+        .retain(|diff| !allowed_header_value_differences.contains(&diff.tag));
     assert!(
         header_cmp.is_clean(),
         "===== Header comparison failed ({}) =====\n{}",
@@ -580,6 +594,72 @@ fn test_build_rpm_file_attrs() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Compare rpm-rs file languages and payload with the rpmbuild i18n fixture.
+#[test]
+fn test_build_rpm_i18n() -> Result<(), Box<dyn std::error::Error>> {
+    let mut builder = PackageBuilder::new(
+        "rpm-i18n",
+        "1.0",
+        "MIT",
+        "noarch",
+        "Test RPM internationalization features",
+    );
+    builder.using_config(
+        BuildConfig::v6()
+            .compression(CompressionType::None)
+            .source_date(common::FIXTURE_SOURCE_DATE),
+    );
+    builder.release("1");
+    builder.description(
+        "A package for exercising RPM internationalization (i18n) features\nincluding localized metadata and language-tagged files.",
+    );
+    builder.add_changelog_entry(
+        "Test User <test@example.com> - 1.0-1",
+        "- Initial package with i18n support",
+        1_774_094_400_u32,
+    );
+    builder.with_file_contents(
+        "common data\n",
+        FileOptions::new("/usr/share/rpm-i18n/common.txt"),
+    )?;
+    for (language, contents) in [
+        ("en", "Hello\n"),
+        ("de", "Hallo\n"),
+        ("ja", "こんにちは\n"),
+        ("fr", "Bonjour\n"),
+        ("zh_CN", "你好\n"),
+    ] {
+        builder.with_file_contents(
+            contents,
+            FileOptions::new(format!(
+                "/usr/share/rpm-i18n/locale/{language}/messages.txt"
+            ))
+            .language(language),
+        )?;
+    }
+    let built = builder.build()?;
+
+    // Write and re-read the package
+    let mut bytes = Vec::new();
+    built.write(&mut bytes)?;
+    let parsed = Package::parse(&mut bytes.as_slice())?;
+
+    // Compare with fixture package
+    let fixture = Package::open(common::pkgs::v6::RPM_I18N)?;
+    // TODO: Build localized SUMMARY and DESCRIPTION values and the associated
+    // HEADERI18NTABLE once PackageBuilder supports internationalized tags.
+    assert_packages_match_except(
+        &parsed,
+        &fixture,
+        "v6",
+        &[
+            IndexTag::RPMTAG_HEADERI18NTABLE as u32,
+            IndexTag::RPMTAG_DESCRIPTION as u32,
+        ],
+    )?;
+    Ok(())
+}
+
 /// Build a package matching the rpm-file-types.spec file.
 ///
 /// Tests handling of different file content types:
@@ -625,6 +705,57 @@ fn test_build_rpm_file_types() -> Result<(), Box<dyn std::error::Error>> {
 
     // Compare with fixture package
     let fixture = Package::open(common::pkgs::v6::RPM_FILE_TYPES)?;
+    assert_packages_match(&parsed, &fixture, "v6")?;
+
+    Ok(())
+}
+
+/// Build a package matching the rpm-special-files.spec special-file entries.
+#[test]
+fn test_build_rpm_special_files() -> Result<(), Box<dyn std::error::Error>> {
+    let pkg = PackageBuilder::new(
+        "rpm-special-files",
+        "1.0",
+        "MIT",
+        "noarch",
+        "Test RPM special file metadata",
+    )
+    .using_config(
+        BuildConfig::v6()
+            .compression(CompressionType::None)
+            .source_date(common::FIXTURE_SOURCE_DATE),
+    )
+    .release("1")
+    .description("Test RPM handling of special file metadata.")
+    .add_changelog_entry(
+        "RPM Test <rpm-test@example.com> - 1.0-1",
+        "- Build special file fixture",
+        1_681_041_600, // Sun Apr 9 2023 12:00:00 UTC
+    )
+    .with_special_file(
+        FileOptions::character_device("/dev/rpm-special-files-null", 1, 3)
+            .permissions(0o600)
+            .user("root")
+            .group("root"),
+    )?
+    .with_special_file(
+        FileOptions::block_device("/dev/rpm-special-files-loop", 7, 0)
+            .permissions(0o640)
+            .user("root")
+            .group("root"),
+    )?
+    .with_special_file(
+        FileOptions::fifo("/run/rpm-special-files.fifo")
+            .permissions(0o620)
+            .user("root")
+            .group("root"),
+    )?
+    .build()?;
+
+    let mut buf = Vec::new();
+    pkg.write(&mut buf)?;
+    let parsed = Package::parse(&mut buf.as_slice())?;
+    let fixture = Package::open(common::pkgs::v6::RPM_SPECIAL_FILES)?;
     assert_packages_match(&parsed, &fixture, "v6")?;
 
     Ok(())

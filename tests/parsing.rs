@@ -243,6 +243,30 @@ fn test_file_attrs() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Parse the rpmbuild i18n fixture and retain languages in file-list order.
+#[test]
+fn test_rpm_i18n() -> Result<(), Box<dyn std::error::Error>> {
+    let package = Package::open(common::pkgs::v6::RPM_I18N)?;
+    let expected = [
+        ("/usr/share/rpm-i18n/common.txt", ""),
+        ("/usr/share/rpm-i18n/locale/de/messages.txt", "de"),
+        ("/usr/share/rpm-i18n/locale/en/messages.txt", "en"),
+        ("/usr/share/rpm-i18n/locale/fr/messages.txt", "fr"),
+        ("/usr/share/rpm-i18n/locale/ja/messages.txt", "ja"),
+        ("/usr/share/rpm-i18n/locale/zh_CN/messages.txt", "zh_CN"),
+    ];
+
+    let files = package.metadata.get_file_entries()?;
+    assert_eq!(files.len(), expected.len());
+    for (file, (path, language)) in files.iter().zip(expected) {
+        assert_eq!(file.path(), Path::new(path));
+        assert_eq!(file.language(), Some(language));
+    }
+    // TODO: Test localized summary and description values when the i18n tag
+    // accessors can select a language.
+    Ok(())
+}
+
 /// Parse the rpm-file-types fixture and verify metadata, focusing on unusual
 /// file names (spaces, special characters) and binary content (PNG image).
 #[test]
@@ -342,6 +366,43 @@ fn test_file_types() -> Result<(), Box<dyn std::error::Error>> {
         vec!["247ac97e28b950c53f1fa3b34d9eb55d53100d12f60c785b2b8ce6c497fd3231"]
     );
 
+    Ok(())
+}
+
+/// Parse the rpm-special-files fixture and verify special-file metadata.
+#[test]
+fn test_special_files_package() -> Result<(), Box<dyn std::error::Error>> {
+    let package = Package::open(common::pkgs::v6::RPM_SPECIAL_FILES)?;
+    let entries = package.metadata.get_file_entries()?;
+
+    assert_eq!(package.metadata.get_name()?, "rpm-special-files");
+    assert_eq!(entries.len(), 3);
+
+    let block = entries
+        .iter()
+        .find(|entry| entry.path() == Path::new("/dev/rpm-special-files-loop"))
+        .expect("block device entry");
+    assert_eq!(block.file_type(), FileType::BlockDevice);
+    assert_eq!(block.permissions(), 0o640);
+    assert_eq!(block.rdev(), 0x0700);
+    assert_eq!((block.rdev_major(), block.rdev_minor()), (7, 0));
+
+    let character = entries
+        .iter()
+        .find(|entry| entry.path() == Path::new("/dev/rpm-special-files-null"))
+        .expect("character device entry");
+    assert_eq!(character.file_type(), FileType::CharacterDevice);
+    assert_eq!(character.permissions(), 0o600);
+    assert_eq!(character.rdev(), 0x0103);
+    assert_eq!((character.rdev_major(), character.rdev_minor()), (1, 3));
+
+    let fifo = entries
+        .iter()
+        .find(|entry| entry.path() == Path::new("/run/rpm-special-files.fifo"))
+        .expect("FIFO entry");
+    assert_eq!(fifo.file_type(), FileType::Fifo);
+    assert_eq!(fifo.permissions(), 0o620);
+    assert_eq!(fifo.rdev(), 0);
     Ok(())
 }
 

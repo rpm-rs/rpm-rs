@@ -523,6 +523,40 @@ pub fn format_tag_id(tag: u32) -> String {
     }
 }
 
+/// Return a main-header tag's name, or a numeric name for an unknown tag.
+pub fn main_tag_name(tag: u32) -> String {
+    IndexTag::from_u32(tag).map_or_else(|| format!("#{tag}"), |known| known.to_string())
+}
+
+/// Return a signature-header tag's name, or a numeric name for an unknown tag.
+pub fn signature_tag_name(tag: u32) -> String {
+    IndexSignatureTag::from_u32(tag).map_or_else(|| format!("#{tag}"), |known| known.to_string())
+}
+
+/// Parse a main-header tag name or a numeric `#<tag>` name.
+///
+/// Named lookups scan the numeric tag range and allocate names; consider a
+/// direct name lookup if this becomes hot for large headers.
+pub fn parse_main_tag_name(name: &str) -> Option<u32> {
+    if let Some(number) = name.strip_prefix('#') {
+        return number.parse().ok();
+    }
+    (0..=6000).find(|&number| IndexTag::from_u32(number).is_some_and(|tag| tag.to_string() == name))
+}
+
+/// Parse a signature-header tag name or a numeric `#<tag>` name.
+///
+/// Named lookups scan the numeric tag range and allocate names; consider a
+/// direct name lookup if this becomes hot for large headers.
+pub fn parse_signature_tag_name(name: &str) -> Option<u32> {
+    if let Some(number) = name.strip_prefix('#') {
+        return number.parse().ok();
+    }
+    (0..=6000).find(|&number| {
+        IndexSignatureTag::from_u32(number).is_some_and(|tag| tag.to_string() == name)
+    })
+}
+
 /// Size (in bytes) of the package "lead" section
 pub const LEAD_SIZE: u32 = 96;
 /// Size (in bytes) of the index header (the fixed portion of each header)
