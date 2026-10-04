@@ -243,6 +243,30 @@ fn test_file_attrs() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Parse the rpmbuild i18n fixture and retain languages in file-list order.
+#[test]
+fn test_rpm_i18n() -> Result<(), Box<dyn std::error::Error>> {
+    let package = Package::open(common::pkgs::v6::RPM_I18N)?;
+    let expected = [
+        ("/usr/share/rpm-i18n/common.txt", ""),
+        ("/usr/share/rpm-i18n/locale/de/messages.txt", "de"),
+        ("/usr/share/rpm-i18n/locale/en/messages.txt", "en"),
+        ("/usr/share/rpm-i18n/locale/fr/messages.txt", "fr"),
+        ("/usr/share/rpm-i18n/locale/ja/messages.txt", "ja"),
+        ("/usr/share/rpm-i18n/locale/zh_CN/messages.txt", "zh_CN"),
+    ];
+
+    let files = package.metadata.get_file_entries()?;
+    assert_eq!(files.len(), expected.len());
+    for (file, (path, language)) in files.iter().zip(expected) {
+        assert_eq!(file.path(), Path::new(path));
+        assert_eq!(file.language(), Some(language));
+    }
+    // TODO: Test localized summary and description values when the i18n tag
+    // accessors can select a language.
+    Ok(())
+}
+
 /// Parse the rpm-file-types fixture and verify metadata, focusing on unusual
 /// file names (spaces, special characters) and binary content (PNG image).
 #[test]

@@ -162,6 +162,8 @@ mod build_types {
         pub flags: FileFlags,
         pub user: String,
         pub group: String,
+        /// Language selection for this path, if specified.
+        pub language: Option<String>,
         pub base_name: String,
         pub dir: String,
         pub caps: Option<FileCaps>,
@@ -184,6 +186,8 @@ mod build_types {
         pub(crate) symlink: String,
         /// Override the source file's modification time.
         pub(crate) modified_at: Option<Timestamp>,
+        /// Override the file's language selection stored in `FILELANGS`.
+        pub(crate) language: Option<String>,
         pub(crate) mode: FileMode,
         pub(crate) flag: FileFlags,
         pub(crate) use_default_permissions: bool,
@@ -206,6 +210,7 @@ mod build_types {
                     group: None,
                     symlink: "".to_string(),
                     modified_at: None,
+                    language: None,
                     mode: FileMode::regular(0o644),
                     flag: FileFlags::empty(),
                     use_default_permissions: true,
@@ -230,6 +235,7 @@ mod build_types {
                     group: None,
                     symlink: "".to_string(),
                     modified_at: None,
+                    language: None,
                     mode: FileMode::dir(0o755),
                     flag: FileFlags::empty(),
                     use_default_permissions: true,
@@ -256,6 +262,7 @@ mod build_types {
                     group: None,
                     symlink: target.into(),
                     modified_at: None,
+                    language: None,
                     mode: FileMode::symbolic_link(0o777),
                     flag: FileFlags::empty(),
                     use_default_permissions: false,
@@ -284,6 +291,7 @@ mod build_types {
                     group: None,
                     symlink: "".to_string(),
                     modified_at: None,
+                    language: None,
                     mode: FileMode::regular(0),
                     flag: FileFlags::GHOST,
                     use_default_permissions: true,
@@ -315,6 +323,7 @@ mod build_types {
                     group: None,
                     symlink: "".to_string(),
                     modified_at: None,
+                    language: None,
                     mode: FileMode::dir(0o755),
                     flag: FileFlags::GHOST,
                     use_default_permissions: true,
@@ -335,6 +344,15 @@ mod build_types {
         /// Override the modification time stored for this file entry.
         pub fn modified_at(mut self, modified_at: Timestamp) -> Self {
             self.inner.modified_at = Some(modified_at);
+            self
+        }
+
+        /// Set the file's RPM language selection; use `|` to separate multiple locales.
+        ///
+        /// An empty string explicitly selects no language, while omitting this
+        /// option leaves an existing `FILELANGS` array under the caller's control.
+        pub fn language(mut self, language: impl Into<String>) -> Self {
+            self.inner.language = Some(language.into());
             self
         }
 

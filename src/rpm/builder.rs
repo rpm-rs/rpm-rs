@@ -69,6 +69,8 @@ pub struct BuiltFile {
     pub user: String,
     /// Named file group.
     pub group: String,
+    /// Language selection for this file, if explicitly staged.
+    pub language: Option<String>,
     /// RPM device identity.
     pub device: u32,
     /// RPM inode identity.
@@ -1769,6 +1771,15 @@ impl PackageBuilder {
                 .into_iter()
                 .map(|entry| IndexEntry::new_raw(entry.tag, entry.data)),
         );
+
+        // Ordinary packages emit empty per-file defaults unless staging supplied
+        // an explicit language array through the shared payload result.
+        if files_len != 0 && built.files.iter().all(|file| file.language.is_none()) {
+            actual_records.push(IndexEntry::new(
+                IndexTag::RPMTAG_FILELANGS,
+                IndexData::StringArray(vec![String::new(); files_len]),
+            ));
+        }
 
         actual_records.extend([
             IndexEntry::new(

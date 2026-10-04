@@ -103,6 +103,24 @@ class TestBuildConfig:
 
 
 class TestFiles:
+    def test_file_languages_round_trip(self):
+        b = PackageBuilder("languages", "1.0", "MIT", "noarch")
+        b.with_file_contents(b"bonjour", FileOptions.new("/a", language="fr|de"))
+        b.with_file_contents(b"plain", FileOptions.new("/b"))
+        b.with_dir_entry(FileOptions.dir("/directory"))
+        b.with_ghost(FileOptions.ghost("/ghost", language=""))
+        pkg = b.build()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "languages.rpm")
+            pkg.write_file(path)
+            entries = Package.open(path).metadata.file_entries()
+        assert [(entry.path, entry.language) for entry in entries] == [
+            ("/a", "fr|de"),
+            ("/b", ""),
+            ("/directory", ""),
+            ("/ghost", ""),
+        ]
+
     def test_with_file(self):
         b = PackageBuilder("test", "1.0", "MIT", "noarch")
         b.with_file(EXAMPLE_CONFIG, FileOptions.new("/etc/test.toml"))

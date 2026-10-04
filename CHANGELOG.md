@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Per-file language options and accessors let Rust and Python callers preserve or edit `FILELANGS` when rebuilding packages.
+
 ## 0.29.0
 
 ### Added

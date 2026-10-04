@@ -63,6 +63,24 @@ mod validation {
         assert!(result.is_err(), "should reject control chars in file user");
     }
 
+    /// Reject control characters in per-file language metadata.
+    #[test]
+    fn test_builder_rejects_control_chars_in_file_language() -> Result<(), Error> {
+        let mut builder = PackageBuilder::new("lang", "1", "MIT", "noarch", "language test");
+        builder.with_file_contents(
+            b"text".to_vec(),
+            FileOptions::new("/text").language("fr\0de"),
+        )?;
+        assert!(matches!(
+            builder.build(),
+            Err(Error::InvalidControlChar {
+                field: "file language",
+                ..
+            })
+        ));
+        Ok(())
+    }
+
     /// Verify that pre_build_validation rejects control chars in changelog metadata.
     #[test]
     fn test_builder_rejects_control_chars_in_changelogs() {
@@ -1217,6 +1235,76 @@ mod rebuild_api {
     use super::*;
     use sha2::Digest;
 
+    /// Per-file language values survive ordinary package serialization.
+    #[test]
+    fn file_languages_round_trip_in_header_order() -> Result<(), Error> {
+        let mut builder = PackageBuilder::new("languages", "1", "MIT", "noarch", "languages");
+        builder.with_file_contents(
+            b"bonjour".to_vec(),
+            FileOptions::new("/a").language("fr|de"),
+        )?;
+        builder.with_file_contents(b"plain".to_vec(), FileOptions::new("/b"))?;
+        builder.with_dir_entry(FileOptions::dir("/directory"))?;
+        builder.with_ghost(FileOptions::ghost("/ghost").language(""))?;
+        let package = builder.build()?;
+        assert_eq!(
+            package.metadata.header.entry(IndexTag::RPMTAG_FILELANGS)?,
+            IndexData::StringArray(vec!["fr|de".into(), "".into(), "".into(), "".into()])
+        );
+        let mut bytes = Vec::new();
+        package.write(&mut bytes)?;
+        let parsed = Package::parse(&mut std::io::Cursor::new(bytes))?;
+        let files = parsed.metadata.get_file_entries()?;
+        assert_eq!(files[0].language(), Some("fr|de"));
+        assert_eq!(files[1].language(), Some(""));
+        assert_eq!(files[2].language(), Some(""));
+        assert_eq!(files[3].language(), Some(""));
+        Ok(())
+    }
+
+    /// A raw-header rebuild can omit FILELANGS or replace it from staged values.
+    #[test]
+    fn payload_builder_preserves_absent_and_explicit_file_languages() -> Result<(), Error> {
+        let mut plain = PayloadBuilder::new();
+        plain.with_file_contents(b"plain".to_vec(), FileOptions::new("/plain"))?;
+        let plain = plain.build()?;
+        assert!(
+            !plain
+                .file_header_entries()
+                .iter()
+                .any(|entry| entry.tag == IndexTag::RPMTAG_FILELANGS as u32)
+        );
+        let mut editor = HeaderEditor::new(IndexTag::RPMTAG_HEADERIMMUTABLE);
+        plain.apply_to_header(&mut editor);
+        let package = Package::assemble(
+            Lead::new("plain"),
+            editor.build(),
+            plain.compressed_payload,
+            RpmFormat::V4,
+            None,
+        )?;
+        assert_eq!(package.metadata.get_file_entries()?[0].language(), None);
+
+        let mut localized = PayloadBuilder::new();
+        localized.with_file_contents(
+            b"localized".to_vec(),
+            FileOptions::new("/plain").language("fr"),
+        )?;
+        let localized = localized.build()?;
+        let mut editor = HeaderEditor::new(IndexTag::RPMTAG_HEADERIMMUTABLE);
+        editor.upsert(
+            IndexTag::RPMTAG_FILELANGS as u32,
+            IndexData::StringArray(vec!["old".into()]),
+        );
+        localized.apply_to_header(&mut editor);
+        assert_eq!(
+            editor.build().entry(IndexTag::RPMTAG_FILELANGS)?,
+            IndexData::StringArray(vec!["fr".into()])
+        );
+        Ok(())
+    }
+
+    /// Ordinary packages default file languages while raw payloads leave them caller-owned.
     #[test]
     fn standalone_payload_matches_ordinary_builder_in_both_formats() -> Result<(), Error> {
         for format in [RpmFormat::V4, RpmFormat::V6] {
@@ -1234,6 +1322,16 @@ mod rebuild_api {
             let package = ordinary.build()?;
 
             assert_eq!(payload.compressed_payload, package.payload);
+            assert!(
+                !payload
+                    .file_header_entries()
+                    .iter()
+                    .any(|entry| entry.tag == IndexTag::RPMTAG_FILELANGS as u32)
+            );
+            assert_eq!(
+                package.metadata.header.entry(IndexTag::RPMTAG_FILELANGS)?,
+                IndexData::StringArray(vec![String::new()])
+            );
             for entry in payload.rebuild_header_entries() {
                 assert_eq!(package.metadata.header.entry(entry.tag)?, entry.data);
             }

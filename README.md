@@ -118,6 +118,8 @@ let pkg = rpm::Package::open("tests/assets/RPMS/v6/rpm-basic-2.3.4-5.el9.noarch.
 // List file metadata without reading the payload
 for entry in pkg.metadata.get_file_entries()? {
     println!("{} ({} bytes, {:o})", entry.path().display(), entry.size(), entry.permissions());
+    // `None` means the RPM has no FILELANGS tag; Some("") means no language restriction.
+    println!("language: {:?}", entry.language());
 }
 
 // Iterate over file contents (decompresses the payload)
@@ -359,7 +361,7 @@ let pkg = rpm::PackageBuilder::new("test", "1.0.0", "MIT", "x86_64", "some aweso
     // add a file from in-memory content instead of reading from disk
     .with_file_contents(
         "hello world!",
-        rpm::FileOptions::new("/usr/share/awesome/greeting.txt"),
+        rpm::FileOptions::new("/usr/share/awesome/greeting.txt").language("fr"),
     )?
     // binary content works too
     .with_file_contents(

@@ -118,6 +118,8 @@ pkg = Package.open("tests/assets/RPMS/v6/rpm-basic-2.3.4-5.el9.noarch.rpm")
 # List file metadata without reading the payload
 for entry in pkg.metadata.file_entries():
     print(f"{entry.path} ({entry.size} bytes, {oct(entry.mode.permissions)})")
+    # None means FILELANGS is absent; "" means no language restriction.
+    print(f"language: {entry.language!r}")
 
 # Read file contents (decompresses the payload)
 for f in pkg.files():
@@ -326,7 +328,7 @@ builder.with_file(
 # add a file from in-memory content instead of reading from disk
 builder.with_file_contents(
     b"hello world!",
-    FileOptions.new("/usr/share/awesome/greeting.txt"),
+    FileOptions.new("/usr/share/awesome/greeting.txt", language="fr"),
 )
 
 # binary content works too

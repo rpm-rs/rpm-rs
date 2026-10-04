@@ -63,6 +63,9 @@ impl FileStaging {
             super::super::util::reject_control_chars("file path", path)?;
             super::super::util::reject_control_chars("file user", &entry.user)?;
             super::super::util::reject_control_chars("file group", &entry.group)?;
+            if let Some(language) = &entry.language {
+                super::super::util::reject_control_chars("file language", language)?;
+            }
             super::super::util::reject_control_chars("file symlink target", &entry.link)?;
         }
         Ok(())
@@ -589,6 +592,7 @@ impl FileStaging {
             flags: options.flag,
             user: options.user.expect("user should be resolved by now"),
             group: options.group.expect("group should be resolved by now"),
+            language: options.language,
             mode: options.mode,
             link: options.symlink,
             modified_at,

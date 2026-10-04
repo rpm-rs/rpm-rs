@@ -702,6 +702,8 @@ pub struct FileEntry<'a> {
     pub(crate) user: Cow<'a, str>,
     /// The owning group.
     pub(crate) group: Cow<'a, str>,
+    /// Language selection recorded for this path, if the package has `FILELANGS`.
+    pub(crate) language: Option<Cow<'a, str>>,
     /// Clocks the last access time.
     pub(crate) modified_at: Timestamp,
     /// The size recorded in the header; directory sizes may reflect inode size.
@@ -747,6 +749,13 @@ impl<'a> FileEntry<'a> {
     /// Returns the owning group of this file entry.
     pub fn group(&self) -> &str {
         &self.group
+    }
+
+    /// Return this file's language selection, if the package has `FILELANGS`.
+    ///
+    /// Multiple locale names within one entry are separated by `|`.
+    pub fn language(&self) -> Option<&str> {
+        self.language.as_deref()
     }
 
     /// Returns the permission bits of this file entry (including setuid/setgid/sticky).
@@ -805,6 +814,9 @@ impl<'a> FileEntry<'a> {
             mode: self.mode,
             user: Cow::Owned(self.user.into_owned()),
             group: Cow::Owned(self.group.into_owned()),
+            language: self
+                .language
+                .map(|language| Cow::Owned(language.into_owned())),
             modified_at: self.modified_at,
             size: self.size,
             flags: self.flags,

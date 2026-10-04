@@ -987,6 +987,7 @@ mod stripped_cpio_tests {
             mode: crate::FileMode::regular(0o644),
             user: Cow::Borrowed("root"),
             group: Cow::Borrowed("root"),
+            language: None,
             modified_at: crate::Timestamp(0),
             flags: crate::FileFlags::empty(),
             digest: None,

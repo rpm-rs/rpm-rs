@@ -1872,6 +1872,7 @@ struct FileTagArrays<'a> {
     modes: Vec<u16>,
     users: Vec<&'a str>,
     groups: Vec<&'a str>,
+    languages: Option<Vec<&'a str>>,
     digests: Vec<&'a str>,
     mtimes: Vec<u32>,
     sizes: Vec<u64>,
@@ -1907,6 +1908,14 @@ impl<'a> FileTagArrays<'a> {
         let groups = meta
             .header
             .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEGROUPNAME)?;
+        let languages = match meta
+            .header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_FILELANGS)
+        {
+            Ok(languages) => Some(languages),
+            Err(Error::TagNotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
         let digests = meta
             .header
             .get_entry_data_as_string_array(IndexTag::RPMTAG_FILEDIGESTS)?;
@@ -1974,6 +1983,9 @@ impl<'a> FileTagArrays<'a> {
         let n_files = modes.len();
         if users.len() != n_files
             || groups.len() != n_files
+            || languages
+                .as_ref()
+                .is_some_and(|values| values.len() != n_files)
             || digests.len() != n_files
             || mtimes.len() != n_files
             || sizes.len() != n_files
@@ -1990,6 +2002,7 @@ impl<'a> FileTagArrays<'a> {
             modes,
             users,
             groups,
+            languages,
             digests,
             mtimes,
             sizes,
@@ -2039,6 +2052,10 @@ impl<'a> FileTagArrays<'a> {
             basename: Cow::Borrowed(self.basenames[i]),
             user: Cow::Borrowed(self.users[i]),
             group: Cow::Borrowed(self.groups[i]),
+            language: self
+                .languages
+                .as_ref()
+                .map(|languages| Cow::Borrowed(languages[i])),
             mode: self.modes[i].into(),
             modified_at: crate::Timestamp(self.mtimes[i]),
             digest,
