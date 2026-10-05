@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `PackageMetadata::iter_changelog_entries()` for iterating over changelog entries without collecting them into a list.
 - `Lead` construction and accessors for RPM reconstruction tools.
+- Add file modification-time override API.
 - `RpmFile::has_payload()` identifies entries whose content is present in the payload.
 - `StreamingRpmFile::has_payload()` identifies entries whose content is present while streaming.
 - Package builders can add character devices, block devices, FIFOs, and sockets; file metadata now exposes device numbers and special file types.

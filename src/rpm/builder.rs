@@ -954,6 +954,8 @@ impl PackageBuilder {
         bulk: bool,
         #[cfg(unix)] source_metadata: Option<&fs::Metadata>,
     ) -> Result<(), Error> {
+        let modified_at = options.modified_at.unwrap_or(modified_at);
+
         // Apply builder-level defaults for ownership and permissions where
         // the FileOptions hasn't been explicitly overridden.
         let defaults = if options.mode.file_type() == FileType::Dir {
