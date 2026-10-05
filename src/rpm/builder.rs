@@ -1786,13 +1786,6 @@ impl PackageBuilder {
                 .into_iter()
                 .map(|entry| IndexEntry::new_raw(entry.tag, entry.data)),
         );
-        if files_len != 0 && built.files.iter().all(|file| file.language.is_empty()) {
-            actual_records.push(IndexEntry::new(
-                IndexTag::RPMTAG_FILELANGS,
-                IndexData::StringArray(vec![String::new(); files_len]),
-            ));
-        }
-
         actual_records.extend([
             IndexEntry::new(
                 IndexTag::RPMTAG_PROVIDENAME,

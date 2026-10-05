@@ -1409,7 +1409,7 @@ mod rebuild_api {
         assert_eq!(header.entry(65000u32)?, IndexData::Bin(vec![0, 255]));
         assert_eq!(
             header.entry(IndexTag::RPMTAG_FILELANGS)?,
-            IndexData::StringArray(vec!["fr".into()])
+            IndexData::StringArray(vec![String::new()])
         );
         assert!(!header.entry_is_present(IndexTag::RPMTAG_PAYLOADCOMPRESSOR));
         assert_eq!(
@@ -1461,7 +1461,7 @@ mod rebuild_api {
         Ok(())
     }
 
-    /// Rebuilt v6 tags replace v4 tags; callers remove obsolete classification.
+    /// Rebuilt v6 tags replace v4 tags and stale languages.
     #[test]
     fn rebuilding_v6_payload_preserves_caller_owned_tags() -> Result<(), Error> {
         use IndexTag::*;
@@ -1496,7 +1496,7 @@ mod rebuild_api {
         assert!(header.entry_is_present(RPMTAG_LONGFILESIZES));
         assert_eq!(
             header.entry(RPMTAG_FILELANGS)?,
-            IndexData::StringArray(vec!["fr".into()])
+            IndexData::StringArray(vec![String::new()])
         );
         assert!(!header.entry_is_present(RPMTAG_FILECLASS));
         assert!(!header.entry_is_present(RPMTAG_CLASSDICT));
@@ -1504,7 +1504,7 @@ mod rebuild_api {
     }
 
     #[test]
-    fn changed_file_set_can_drop_stale_positional_metadata() -> Result<(), Error> {
+    fn changed_file_set_replaces_stale_file_languages() -> Result<(), Error> {
         let mut builder = PayloadBuilder::new();
         builder.with_file_contents(b"keep".to_vec(), FileOptions::new("/keep"))?;
         builder.with_file_contents(b"new".to_vec(), FileOptions::new("/new"))?;
@@ -1515,16 +1515,16 @@ mod rebuild_api {
             IndexTag::RPMTAG_FILELANGS as u32,
             IndexData::StringArray(vec!["fr".into(), "de".into()]),
         );
-        // An edit that changes file order must remap or remove caller-owned
-        // positional arrays before applying the rebuilt file metadata.
-        editor.remove(IndexTag::RPMTAG_FILELANGS as u32);
         payload.apply_to_header(&mut editor);
         let header = editor.build();
         assert_eq!(
             header.entry(IndexTag::RPMTAG_BASENAMES)?,
             IndexData::StringArray(vec!["keep".into(), "new".into()])
         );
-        assert!(!header.entry_is_present(IndexTag::RPMTAG_FILELANGS));
+        assert_eq!(
+            header.entry(IndexTag::RPMTAG_FILELANGS)?,
+            IndexData::StringArray(vec![String::new(), String::new()])
+        );
         assert_eq!(header.entry(65000u32)?, IndexData::Bin(vec![4, 5, 6]));
         Ok(())
     }

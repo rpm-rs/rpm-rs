@@ -81,8 +81,7 @@ struct FileDocument {
     mtime: u64,
     user: String,
     group: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    language: Option<String>,
+    language: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -168,6 +167,8 @@ fn extract(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         &header_document(&package.metadata.signature, constants::signature_tag_name)?,
     )?;
     let mut header = header_document(&package.metadata.header, constants::main_tag_name)?;
+    // Per-file languages are edited through files[], not through raw header tags.
+    header.tags.retain(|tag| tag.tag != "RPMTAG_FILELANGS");
     header.files = package
         .metadata
         .get_file_entries()?
@@ -207,6 +208,12 @@ fn create(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|tag| json_tag_to_entry(tag, root))
         .collect::<Result<Vec<_>, _>>()?;
+    if source_entries
+        .iter()
+        .any(|entry| entry.tag == IndexTag::RPMTAG_FILELANGS as u32)
+    {
+        return Err("set file languages in files[], not RPMTAG_FILELANGS".into());
+    }
     apply_dependency_documents(&mut source_entries, document.dependencies.as_ref())?;
     apply_changelog_documents(&mut source_entries, document.changelog.as_ref())?;
     let get = |name: &str| -> Option<String> {
@@ -255,49 +262,21 @@ fn create(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             .compression(compression)
             .file_digest_algorithm(file_digest_algorithm),
     );
-    let source_package = Package::assemble(
-        Lead::new(&name),
-        Header::from_entries(source_entries.clone(), IndexTag::RPMTAG_HEADERIMMUTABLE),
-        Vec::new(),
-        format,
-        None,
-    )?;
     let mut file_overrides = std::collections::BTreeMap::new();
-    for entry in source_package.metadata.get_file_entries()? {
+    for file in &document.files {
+        let mode = u16::from_str_radix(file.mode.trim_start_matches("0o"), 8)?;
         file_overrides.insert(
-            entry
-                .path()
-                .to_string_lossy()
-                .trim_start_matches('/')
-                .to_string(),
+            file.path.trim_start_matches('/').to_string(),
             FileOverride {
-                mode: entry.mode(),
-                modified_at: entry.modified_at(),
-                user: entry.user().to_string(),
-                group: entry.group().to_string(),
-                language: entry.language().map(str::to_string),
-                linkto: entry.linkto().map(str::to_string),
-                flags: entry.flags(),
+                mode: mode.into(),
+                modified_at: Timestamp(file.mtime.try_into()?),
+                user: file.user.clone(),
+                group: file.group.clone(),
+                language: file.language.clone(),
+                linkto: file.linkto.clone(),
+                flags: rpm::FileFlags::from_bits_retain(file.flags),
             },
         );
-    }
-    if !document.files.is_empty() {
-        file_overrides.clear();
-        for file in &document.files {
-            let mode = u16::from_str_radix(file.mode.trim_start_matches("0o"), 8)?;
-            file_overrides.insert(
-                file.path.trim_start_matches('/').to_string(),
-                FileOverride {
-                    mode: mode.into(),
-                    modified_at: Timestamp(file.mtime.try_into()?),
-                    user: file.user.clone(),
-                    group: file.group.clone(),
-                    language: file.language.clone(),
-                    linkto: file.linkto.clone(),
-                    flags: rpm::FileFlags::from_bits_retain(file.flags),
-                },
-            );
-        }
     }
     add_payload_tree(
         &mut builder,
@@ -317,12 +296,7 @@ fn create(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             .user(&metadata.user)
             .group(&metadata.group)
             .modified_at(metadata.modified_at);
-            let options = if let Some(language) = &metadata.language {
-                options.language(language)
-            } else {
-                options
-            };
-            builder.with_ghost(options)?;
+            builder.with_ghost(options.language(&metadata.language))?;
         }
     }
     let built = builder.build()?;
@@ -346,7 +320,7 @@ struct FileOverride {
     modified_at: Timestamp,
     user: String,
     group: String,
-    language: Option<String>,
+    language: String,
     linkto: Option<String>,
     flags: rpm::FileFlags,
 }
@@ -375,7 +349,7 @@ fn add_payload_tree(
             .unwrap_or(default_modified_at);
         let user = override_data.map(|data| data.user.as_str());
         let group = override_data.map(|data| data.group.as_str());
-        let language = override_data.and_then(|data| data.language.as_deref());
+        let language = override_data.map(|data| data.language.as_str());
         if metadata.file_type().is_dir() {
             let mut options = FileOptions::dir(&destination)
                 .modified_at(modified_at)
@@ -496,7 +470,7 @@ fn file_document(entry: rpm::FileEntry<'_>) -> FileDocument {
         mtime: entry.modified_at().0 as u64,
         user: entry.user().to_string(),
         group: entry.group().to_string(),
-        language: entry.language().map(str::to_string),
+        language: entry.language().unwrap_or_default().to_string(),
         digest: entry.digest().map(|digest| digest.as_hex().to_string()),
         linkto: entry.linkto().map(str::to_string),
         flags: entry.flags().bits(),
@@ -608,6 +582,9 @@ fn apply_dependency_documents(
         entries.retain(|entry| {
             ![name_tag as u32, version_tag as u32, flags_tag as u32].contains(&entry.tag)
         });
+        if dependencies.is_empty() {
+            continue;
+        }
         entries.extend([
             HeaderEntry::new(
                 name_tag as u32,
@@ -639,6 +616,9 @@ fn apply_changelog_documents(
         IndexTag::RPMTAG_CHANGELOGTEXT as u32,
     ];
     entries.retain(|entry| !tags.contains(&entry.tag));
+    if documents.is_empty() {
+        return Ok(());
+    }
     entries.extend([
         HeaderEntry::new(
             IndexTag::RPMTAG_CHANGELOGNAME as u32,

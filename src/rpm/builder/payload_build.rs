@@ -142,12 +142,12 @@ impl PayloadBuildResult {
             .collect()
     }
 
-    /// Generate file tags from the resolved staging options and payload.
+    /// Generate complete file tags from the resolved staging options and payload.
     ///
     /// This includes editable values such as modes, mtimes, owners, and flags
-    /// selected before building. A `FILELANGS` array is emitted when at least
-    /// one file has an explicit language; otherwise it remains caller-owned.
-    /// Other positional arrays remain under the caller's control.
+    /// selected before building. File languages default to empty strings when
+    /// they were not selected while staging. Other positional arrays, including
+    /// file class, color, and dependency metadata, remain under the caller's control.
     pub fn file_header_entries(&self) -> Vec<HeaderEntry> {
         let mut entries = Vec::new();
         let large = self.format != RpmFormat::V4 || self.installed_size > u32::MAX as u64;
@@ -266,17 +266,15 @@ impl PayloadBuildResult {
                     ),
                 ));
             }
-            if self.files.iter().any(|file| !file.language.is_empty()) {
-                entries.push(HeaderEntry::new(
-                    IndexTag::RPMTAG_FILELANGS as u32,
-                    IndexData::StringArray(
-                        self.files
-                            .iter()
-                            .map(|file| file.language.clone())
-                            .collect(),
-                    ),
-                ));
-            }
+            entries.push(HeaderEntry::new(
+                IndexTag::RPMTAG_FILELANGS as u32,
+                IndexData::StringArray(
+                    self.files
+                        .iter()
+                        .map(|file| file.language.clone())
+                        .collect(),
+                ),
+            ));
         }
         entries.push(HeaderEntry::new(
             IndexTag::RPMTAG_FILEDIGESTALGO as u32,
@@ -352,9 +350,8 @@ impl PayloadBuildResult {
 
     /// Generate the file and payload tags to apply when rebuilding a package.
     ///
-    /// Staged file metadata replaces corresponding values in the prior header.
-    /// File languages are included only when explicitly staged. Other
-    /// caller-owned positional arrays must be kept aligned with the file list.
+    /// Editable file metadata comes from staging options, not prior header
+    /// values. Unrelated positional arrays remain with the caller.
     pub fn rebuild_header_entries(&self) -> Vec<HeaderEntry> {
         let mut entries = self.file_header_entries();
         entries.extend(self.payload_header_entries());
@@ -398,6 +395,7 @@ impl PayloadBuildResult {
             RPMTAG_BASENAMES,
             RPMTAG_DIRNAMES,
             RPMTAG_FILEVERIFYFLAGS,
+            RPMTAG_FILELANGS,
             RPMTAG_FILECAPS,
             RPMTAG_FILEDIGESTALGO,
             RPMTAG_PAYLOADSHA256,
@@ -413,10 +411,11 @@ impl PayloadBuildResult {
             RPMTAG_PAYLOADFLAGS,
             RPMTAG_RPMFORMAT,
         ];
-        debug_assert!(entries.iter().all(|entry| {
-            entry.tag == RPMTAG_FILELANGS as u32
-                || OWNED_TAGS.iter().any(|tag| *tag as u32 == entry.tag)
-        }));
+        debug_assert!(
+            entries
+                .iter()
+                .all(|entry| OWNED_TAGS.iter().any(|tag| *tag as u32 == entry.tag))
+        );
         for &tag in OWNED_TAGS {
             // Upsert replaces emitted tags; only tags absent from the new
             // result need removal from the old header.

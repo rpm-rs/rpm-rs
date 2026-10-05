@@ -283,7 +283,7 @@ fn raw_rebuild_replaces_stale_derived_tags_but_preserves_editable_ones()
     );
     assert_eq!(
         header.entry(IndexTag::RPMTAG_FILELANGS)?,
-        IndexData::StringArray(vec!["fr".into()])
+        IndexData::StringArray(vec![String::new()])
     );
     assert_ne!(
         header.entry(IndexTag::RPMTAG_FILEDIGESTS)?,
