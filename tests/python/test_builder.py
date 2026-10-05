@@ -237,6 +237,15 @@ class TestFiles:
         assert entries["/run/test.sock"].mode.file_type == FileType.Socket
         assert entries["/run/test.sock"].rdev == 0
 
+    def test_file_languages(self):
+        b = PackageBuilder("test", "1.0", "MIT", "noarch")
+        b.with_file_contents(b"bonjour", FileOptions.new("/a", language="fr|de"))
+        b.with_file_contents(b"plain", FileOptions.new("/b"))
+        entries = {entry.path: entry for entry in b.build().metadata.file_entries()}
+
+        assert entries["/a"].language == "fr|de"
+        assert entries["/b"].language == ""
+
 
 class TestDependencies:
     def test_requires(self):

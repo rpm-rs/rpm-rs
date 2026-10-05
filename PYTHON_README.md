@@ -118,6 +118,7 @@ pkg = Package.open("tests/assets/RPMS/v6/rpm-basic-2.3.4-5.el9.noarch.rpm")
 # List file metadata without reading the payload
 for entry in pkg.metadata.file_entries():
     print(f"{entry.path} ({entry.size} bytes, {oct(entry.mode.permissions)})")
+    print(f"language: {entry.language!r}")
 
 # Read file contents (decompresses the payload)
 for f in pkg.files():
