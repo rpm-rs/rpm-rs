@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Package builders can add character devices, block devices, FIFOs, and sockets; file metadata now exposes device numbers and special file types.
 - Add file modification-time override API to `FileOptions`.
 - Add lang/locale-setting API for `FileOptions` and `FileEntry`.
+- Reusable payload construction metadata for package tools.
 
 ## 0.29.0
 
