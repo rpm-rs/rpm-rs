@@ -118,6 +118,7 @@ let pkg = rpm::Package::open("tests/assets/RPMS/v6/rpm-basic-2.3.4-5.el9.noarch.
 // List file metadata without reading the payload
 for entry in pkg.metadata.get_file_entries()? {
     println!("{} ({} bytes, {:o})", entry.path().display(), entry.size(), entry.permissions());
+    println!("language: {:?}", entry.language());
 }
 
 // Iterate over file contents (decompresses the payload)

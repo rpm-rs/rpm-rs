@@ -256,6 +256,12 @@ impl PyFileEntry {
         self.0.group()
     }
 
+    /// Language selection for this file.
+    #[getter]
+    fn language(&self) -> Option<&str> {
+        self.0.language()
+    }
+
     /// The file mode (type and permissions).
     #[getter]
     fn mode(&self) -> PyFileMode {
@@ -2127,6 +2133,7 @@ impl PyBuildConfig {
 ///     user: Owning user name.
 ///     group: Owning group name.
 ///     permissions: Permission bits (e.g. 0o755).
+///     language: RPM language selection for files and recursive directories (e.g. "fr" or "fr|de").
 ///     config: If True, mark as a configuration file.
 ///     noreplace: If True, mark as noreplace (only meaningful with config=True).
 ///     doc: If True, mark as documentation.
@@ -2155,6 +2162,7 @@ fn apply_file_options(
     license: bool,
     artifact: bool,
     hardlink: Option<&str>,
+    language: Option<&str>,
 ) -> Result<crate::FileOptionsBuilder, crate::Error> {
     if let Some(u) = user {
         builder = builder.user(u);
@@ -2189,6 +2197,9 @@ fn apply_file_options(
     if let Some(h) = hardlink {
         builder = builder.hardlink(h);
     }
+    if let Some(language) = language {
+        builder = builder.language(language);
+    }
     Ok(builder)
 }
 
@@ -2196,7 +2207,7 @@ fn apply_file_options(
 impl PyFileOptions {
     /// Create options for a regular file at the given destination path.
     #[staticmethod]
-    #[pyo3(name = "new", signature = (dest, *, user=None, group=None, permissions=None, caps=None, config=false, noreplace=false, missingok=false, doc=false, license=false, artifact=false, hardlink=None))]
+    #[pyo3(name = "new", signature = (dest, *, user=None, group=None, permissions=None, caps=None, config=false, noreplace=false, missingok=false, doc=false, license=false, artifact=false, hardlink=None, language=None))]
     fn new_file(
         dest: &str,
         user: Option<&str>,
@@ -2210,6 +2221,7 @@ impl PyFileOptions {
         license: bool,
         artifact: bool,
         hardlink: Option<&str>,
+        language: Option<&str>,
     ) -> PyResult<Self> {
         apply_file_options(
             crate::FileOptions::new(dest),
@@ -2224,6 +2236,7 @@ impl PyFileOptions {
             license,
             artifact,
             hardlink,
+            language,
         )
         .map(|b| PyFileOptions(Some(b)))
         .map_err(to_pyerr)
@@ -2251,6 +2264,7 @@ impl PyFileOptions {
             false,
             false,
             None,
+            None,
         )
         .map(|b| PyFileOptions(Some(b)))
         .map_err(to_pyerr)
@@ -2258,12 +2272,13 @@ impl PyFileOptions {
 
     /// Create options for a symbolic link.
     #[staticmethod]
-    #[pyo3(signature = (dest, target, *, user=None, group=None))]
+    #[pyo3(signature = (dest, target, *, user=None, group=None, language=None))]
     fn symlink(
         dest: &str,
         target: &str,
         user: Option<&str>,
         group: Option<&str>,
+        language: Option<&str>,
     ) -> PyResult<Self> {
         apply_file_options(
             crate::FileOptions::symlink(dest, target),
@@ -2278,6 +2293,7 @@ impl PyFileOptions {
             false,
             false,
             None,
+            language,
         )
         .map(|b| PyFileOptions(Some(b)))
         .map_err(to_pyerr)
@@ -2304,6 +2320,7 @@ impl PyFileOptions {
             false,
             false,
             false,
+            None,
             None,
         )
         .map(|b| PyFileOptions(Some(b)))
@@ -2332,6 +2349,7 @@ impl PyFileOptions {
             false,
             false,
             None,
+            None,
         )
         .map(|b| PyFileOptions(Some(b)))
         .map_err(to_pyerr)
@@ -2358,6 +2376,7 @@ impl PyFileOptions {
             false,
             false,
             false,
+            None,
             None,
         )
         .map(|b| PyFileOptions(Some(b)))
@@ -2390,6 +2409,7 @@ impl PyFileOptions {
             false,
             false,
             None,
+            None,
         )
         .map(|b| PyFileOptions(Some(b)))
         .map_err(to_pyerr)
@@ -2421,6 +2441,7 @@ impl PyFileOptions {
             false,
             false,
             None,
+            None,
         )
         .map(|b| PyFileOptions(Some(b)))
         .map_err(to_pyerr)
@@ -2447,6 +2468,7 @@ impl PyFileOptions {
             false,
             false,
             false,
+            None,
             None,
         )
         .map(|b| PyFileOptions(Some(b)))
@@ -2604,7 +2626,7 @@ impl PyPackageBuilder {
     ///
     /// All files and subdirectories under source_dir are added recursively,
     /// with destination paths rooted at dest_prefix.
-    #[pyo3(signature = (source_dir, dest_prefix, *, user=None, group=None, permissions=None, caps=None, config=false, noreplace=false, missingok=false, doc=false, license=false, artifact=false))]
+    #[pyo3(signature = (source_dir, dest_prefix, *, user=None, group=None, permissions=None, caps=None, config=false, noreplace=false, missingok=false, doc=false, license=false, artifact=false, language=None))]
     fn with_dir(
         &mut self,
         source_dir: &str,
@@ -2619,6 +2641,7 @@ impl PyPackageBuilder {
         doc: bool,
         license: bool,
         artifact: bool,
+        language: Option<String>,
     ) -> PyResult<()> {
         // Validate caps upfront since the closure can't return Result
         if let Some(ref c) = caps {
@@ -2642,6 +2665,7 @@ impl PyPackageBuilder {
                     license,
                     artifact,
                     None,
+                    language.as_deref(),
                 )
                 .unwrap()
             })

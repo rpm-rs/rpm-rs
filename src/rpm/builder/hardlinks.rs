@@ -281,6 +281,7 @@ mod tests {
             flags: FileFlags::empty(),
             user: "root".to_string(),
             group: "root".to_string(),
+            language: String::new(),
             base_name: String::new(),
             dir: "/".to_string(),
             caps: None,

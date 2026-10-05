@@ -63,6 +63,23 @@ mod validation {
         assert!(result.is_err(), "should reject control chars in file user");
     }
 
+    #[test]
+    fn test_builder_rejects_control_chars_in_file_language() -> Result<(), Error> {
+        let mut builder = PackageBuilder::new("lang", "1", "MIT", "noarch", "language test");
+        builder.with_file_contents(
+            b"text".to_vec(),
+            FileOptions::new("/text").language("fr\0de"),
+        )?;
+        assert!(matches!(
+            builder.build(),
+            Err(Error::InvalidControlChar {
+                field: "file language",
+                ..
+            })
+        ));
+        Ok(())
+    }
+
     /// Verify that pre_build_validation rejects control chars in changelog metadata.
     #[test]
     fn test_builder_rejects_control_chars_in_changelogs() {
@@ -445,6 +462,32 @@ fn test_build_special_files() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .all(|file| file.content().is_some_and(|content| content.is_empty()))
     );
+    Ok(())
+}
+
+#[test]
+fn file_languages_round_trip_in_header_order() -> Result<(), Error> {
+    let mut builder = PackageBuilder::new("languages", "1", "MIT", "noarch", "languages");
+    builder.with_file_contents(
+        b"bonjour".to_vec(),
+        FileOptions::new("/a").language("fr|de"),
+    )?;
+    builder.with_file_contents(b"plain".to_vec(), FileOptions::new("/b"))?;
+    builder.with_dir_entry(FileOptions::dir("/directory"))?;
+    builder.with_ghost(FileOptions::ghost("/ghost").language(""))?;
+    let package = builder.build()?;
+    assert_eq!(
+        package.metadata.header.entry(IndexTag::RPMTAG_FILELANGS)?,
+        IndexData::StringArray(vec!["fr|de".into(), "".into(), "".into(), "".into()])
+    );
+    let mut bytes = Vec::new();
+    package.write(&mut bytes)?;
+    let parsed = Package::parse(&mut std::io::Cursor::new(bytes))?;
+    let files = parsed.metadata.get_file_entries()?;
+    assert_eq!(files[0].language(), Some("fr|de"));
+    assert_eq!(files[1].language(), Some(""));
+    assert_eq!(files[2].language(), Some(""));
+    assert_eq!(files[3].language(), Some(""));
     Ok(())
 }
 

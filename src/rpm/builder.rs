@@ -1096,6 +1096,7 @@ impl PackageBuilder {
             flags: options.flag,
             user: options.user.expect("user should be resolved by now"),
             group: options.group.expect("group should be resolved by now"),
+            language: options.language.unwrap_or_default(),
             mode: options.mode,
             link: options.symlink,
             modified_at,
@@ -1611,6 +1612,7 @@ impl PackageBuilder {
             reject_control_chars("file path", path)?;
             reject_control_chars("file user", &entry.user)?;
             reject_control_chars("file group", &entry.group)?;
+            reject_control_chars("file language", &entry.language)?;
             reject_control_chars("file symlink target", &entry.link)?;
         }
         for name in &self.changelog_names {
@@ -1730,7 +1732,7 @@ impl PackageBuilder {
                 .member(cpio_path)
                 .map_or(ino_index, |member| member.inode);
             file_inodes.push(inode);
-            file_langs.push("".to_string());
+            file_langs.push(entry.language.clone());
             // safe because indexes cannot change after this as the RpmBuilder is consumed
             // the dir is guaranteed to be there - or else there is a logic error
             let index = self
