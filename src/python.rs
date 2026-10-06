@@ -3902,6 +3902,7 @@ pub fn rpm_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
                 ("RPMLIB", crate::DependencyFlags::RPMLIB.bits()),
                 ("TRIGGERPREIN", crate::DependencyFlags::TRIGGERPREIN.bits()),
                 ("KEYRING", crate::DependencyFlags::KEYRING.bits()),
+                ("STRONG", crate::DependencyFlags::STRONG.bits()),
                 ("CONFIG", crate::DependencyFlags::CONFIG.bits()),
                 ("META", crate::DependencyFlags::META.bits()),
             ],
