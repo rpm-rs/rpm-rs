@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.30.0
+
 ### Added
 
 - Package builders can add character devices, block devices, FIFOs, and sockets; file metadata now exposes device numbers and special file types.
