@@ -331,6 +331,16 @@ where
     /// Returns the lossy fallback if stored during parse, or reads from the store.
     fn entry_as_i18n_string<'a>(&'a self, entry: &'a IndexEntry<T>) -> Result<&'a str, Error> {
         match &entry.data {
+            // Older RPM headers store some localized fields as a plain string
+            // rather than an I18NString array.
+            IndexData::StringTag(s) if !s.is_empty() => Ok(s.as_str()),
+            IndexData::StringTag(_) => {
+                let remaining = &self.store[entry.offset as usize..];
+                let nul = memchr::memchr(0, remaining).ok_or(Error::UnterminatedHeaderString)?;
+                std::str::from_utf8(&remaining[..nul]).map_err(|_| Error::InvalidUtf8 {
+                    tag: entry.tag.to_string(),
+                })
+            }
             // Non-empty: lossy fallback populated during parse (see parse comment above).
             // Empty: valid UTF-8 (or not yet validated), read directly from store.
             IndexData::I18NString(strings) if !strings.is_empty() => Ok(strings[0].as_str()),
