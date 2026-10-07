@@ -864,10 +864,23 @@ impl PackageMetadata {
         Ok(bytes)
     }
 
-    /// Whether this package is a source package, or not
+    /// Whether this package is a source package, or not.
+    ///
+    /// Most packages identify this in the `RPMTAG_SOURCEPACKAGE` or
+    /// `RPMTAG_SOURCERPM` header tags. Older source RPMs may omit both tags;
+    /// librpm classifies those as source packages when the file list has one
+    /// empty directory name, as source RPMs put all files in such a directory.
     #[inline]
     pub fn is_source_package(&self) -> bool {
-        self.header.entry_is_present(IndexTag::RPMTAG_SOURCEPACKAGE)
+        if self.header.entry_is_present(IndexTag::RPMTAG_SOURCEPACKAGE) {
+            return true;
+        }
+        if self.header.entry_is_present(IndexTag::RPMTAG_SOURCERPM) {
+            return false;
+        }
+        self.header
+            .get_entry_data_as_string_array(IndexTag::RPMTAG_DIRNAMES)
+            .is_ok_and(|dirs| dirs.len() == 1 && dirs[0].is_empty())
     }
 
     /// Get the package name
