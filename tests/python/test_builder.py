@@ -109,7 +109,7 @@ class TestFiles:
         b.with_file_contents(b"bonjour", FileOptions.new("/a", language="fr|de"))
         b.with_file_contents(b"plain", FileOptions.new("/b"))
         b.with_dir_entry(FileOptions.dir("/directory"))
-        b.with_ghost(FileOptions.ghost("/ghost", language=""))
+        b.with_ghost(FileOptions.ghost("/ghost"))
         pkg = b.build()
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "languages.rpm")
