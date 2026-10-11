@@ -202,6 +202,7 @@ pub fn validate_caps_text(s: &str) -> Result<(), Error> {
 mod tests {
     use super::{validate_caps_text, validate_capset, validate_suffix};
 
+    /// Known capability sets are accepted and unknown names are rejected.
     #[test]
     fn test_validate_capset() {
         validate_capset("").unwrap();
@@ -221,11 +222,13 @@ mod tests {
         );
     }
 
+    /// Valid capability suffixes are accepted.
     #[test]
     fn test_validate_suffix() {
         validate_suffix("+p").unwrap();
     }
 
+    /// Capability text requires a valid operation and permits empty input.
     #[test]
     fn test_validate_caps_text() {
         // Empty string is valid (equivalent to "=")

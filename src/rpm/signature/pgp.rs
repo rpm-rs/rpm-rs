@@ -727,6 +727,7 @@ pub(crate) mod test {
             BasicKeySigner::new(rsa_signer)
         }
 
+        /// RSA signing produces a signature the verifier can parse.
         #[test]
         fn sign_produces_parseable_signature() {
             let signer = prep_rsa();
@@ -736,6 +737,7 @@ pub(crate) mod test {
             Verifier::parse_signature(&signature).expect("signature should be parseable");
         }
 
+        /// A signature verifies against the signing key's public certificate.
         #[test]
         fn sign_and_verify_with_signer_key() {
             let signing_key = include_bytes!(

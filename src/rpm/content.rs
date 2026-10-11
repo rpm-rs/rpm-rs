@@ -2430,7 +2430,7 @@ mod test_payload_integration {
             assert_eq!(files[0].content().unwrap_or_default().len(), 162);
 
             // Verify spec file content contains expected fields
-            let spec_content = std::str::from_utf8(&files[0].content().unwrap_or_default())?;
+            let spec_content = std::str::from_utf8(files[0].content().unwrap_or_default())?;
             assert!(spec_content.contains("Name:           rpm-empty"));
             assert!(spec_content.contains("Version:        0"));
             assert!(spec_content.contains("License:        LGPL"));

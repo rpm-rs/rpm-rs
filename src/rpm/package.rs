@@ -19,7 +19,7 @@ use std::fmt::Debug;
 use super::Lead;
 use super::headers::*;
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum RpmFormat {
     V4,
     V6,
@@ -275,6 +275,66 @@ pub struct Package {
 }
 
 impl Package {
+    /// Assemble a package from an explicitly constructed main header and payload.
+    ///
+    /// The signature header is always freshly generated. Signature-bearing tags
+    /// in the main header are also removed, while the selected RPM format and
+    /// reserved signature space are retained.
+    #[cfg(feature = "payload")]
+    pub fn assemble(
+        lead: Lead,
+        header: Header<IndexTag>,
+        payload: Vec<u8>,
+        format: RpmFormat,
+        reserved_space: Option<u32>,
+    ) -> Result<Self, Error> {
+        use IndexTag::*;
+        let signature_tags = [
+            RPMTAG_SIGPGP,
+            RPMTAG_SIGGPG,
+            RPMTAG_SIGPGP5,
+            RPMTAG_DSAHEADER,
+            RPMTAG_RSAHEADER,
+            RPMTAG_OPENPGP,
+            RPMTAG_FILESIGNATURES,
+            RPMTAG_FILESIGNATURELENGTH,
+            RPMTAG_VERITYSIGNATURES,
+            RPMTAG_VERITYSIGNATUREALGO,
+        ];
+        let header = if signature_tags
+            .iter()
+            .any(|tag| header.entry_is_present(*tag))
+        {
+            // Rebuild the region as well: its recorded size covers the entries
+            // removed from the main header.
+            let mut editor = HeaderEditor::from_header(&header, RPMTAG_HEADERIMMUTABLE)?;
+            for tag in signature_tags {
+                editor.remove(tag as u32);
+            }
+            editor.build()
+        } else {
+            header
+        };
+        let mut header_bytes = Vec::new();
+        header.write(&mut header_bytes)?;
+        let mut signature = SignatureHeaderBuilder::new()
+            .format(format)
+            .reserved_space(reserved_space)
+            .calculate_digests(&header_bytes);
+        if format == RpmFormat::V4 {
+            signature =
+                signature.set_content_length(header_bytes.len() as u64 + payload.len() as u64);
+        }
+        Ok(Self {
+            metadata: PackageMetadata {
+                lead,
+                signature: signature.build()?,
+                header,
+            },
+            payload,
+        })
+    }
+
     /// Open and parse a file at the provided path as an RPM package
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let rpm_file = fs::File::open(path.as_ref())?;

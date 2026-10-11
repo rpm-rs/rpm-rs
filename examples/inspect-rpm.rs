@@ -60,22 +60,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("Recommends", meta.get_recommends()),
         ("Suggests", meta.get_suggests()),
     ] {
-        if let Ok(deps) = deps {
-            if !deps.is_empty() {
-                println!("{label}:");
-                for dep in &deps {
-                    println!("  {dep}");
-                }
+        if let Ok(deps) = deps
+            && !deps.is_empty()
+        {
+            println!("{label}:");
+            for dep in &deps {
+                println!("  {dep}");
             }
         }
     }
 
-    if let Ok(entries) = meta.get_file_entries() {
-        if !entries.is_empty() {
-            println!("Files ({}):", entries.len());
-            for entry in &entries {
-                println!("  {}", entry.path().display());
-            }
+    if let Ok(entries) = meta.get_file_entries()
+        && !entries.is_empty()
+    {
+        println!("Files ({}):", entries.len());
+        for entry in &entries {
+            println!("  {}", entry.path().display());
         }
     }
 
