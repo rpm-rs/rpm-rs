@@ -56,7 +56,7 @@ digest = "0.10"
 sha3 = "0.10"
 sha2 = "0.10"
 sha1 = "0.10"
-pgp = { version = "0.20.0", features = ["draft-pqc"], optional = true }
+pgp = { version = "0.21.0", features = ["draft-pqc"], optional = true }
 # Cargo resolves all optional dependencies for one lockfile even when features
 # are mutually exclusive. Sequoia 2.4's stable KEM API therefore cannot coexist
 # in this manifest with rPGP's draft-PQC pre-release KEM API.
@@ -81,7 +81,7 @@ rsa = "0.9"
 gethostname = "1.0"
 tempfile = "3.21.0"
 clap = { version = "4.6.0", features = ["derive"] }
-pgp = "0.20.0"
+pgp = "0.21.0"
 
 [features]
 default = [
