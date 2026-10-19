@@ -54,7 +54,7 @@ enum-primitive-derive = "0.3"
 enum-display-derive = "0.1"
 digest = "0.10"
 sha3 = "0.10"
-sha2 = "0.10"
+sha2 = "0.11"
 sha1 = "0.10"
 pgp = { version = "0.20.0", features = ["draft-pqc"], optional = true }
 # Cargo resolves all optional dependencies for one lockfile even when features
