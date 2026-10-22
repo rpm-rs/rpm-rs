@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- Reject malformed symlink metadata whose declared size does not match its target.
+
 ## 0.30.2
 
 ### Fixed

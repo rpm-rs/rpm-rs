@@ -50,6 +50,15 @@ pub enum Error {
     #[error("related tag arrays have inconsistent lengths")]
     InconsistentTagArrayLengths,
 
+    #[error(
+        "invalid symbolic link metadata for file index {index}: declared size {size} does not match target length {target_len}"
+    )]
+    InvalidSymlinkMetadata {
+        index: usize,
+        size: u64,
+        target_len: usize,
+    },
+
     #[error("invalid tag value enum variant for {tag} with {variant}")]
     InvalidTagValueEnumVariant { tag: String, variant: u32 },
 

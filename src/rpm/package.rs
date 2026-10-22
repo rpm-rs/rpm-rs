@@ -1980,6 +1980,18 @@ impl<'a> FileTagArrays<'a> {
     }
 
     fn entry(&self, i: usize) -> Result<FileEntry<'a>, Error> {
+        let mode = FileMode::from(self.modes[i]);
+        // Symlink payload data is skipped according to this size, so malformed metadata could
+        // otherwise consume subsequent archive entries or exhaust memory.
+        if mode.file_type() == FileType::SymbolicLink && self.sizes[i] != self.links[i].len() as u64
+        {
+            return Err(Error::InvalidSymlinkMetadata {
+                index: i,
+                size: self.sizes[i],
+                target_len: self.links[i].len(),
+            });
+        }
+
         let dir_index = self.biject[i] as usize;
         let dirname = self
             .dirs
@@ -2015,7 +2027,7 @@ impl<'a> FileTagArrays<'a> {
                 .languages
                 .as_ref()
                 .map(|languages| Cow::Borrowed(languages[i])),
-            mode: self.modes[i].into(),
+            mode,
             modified_at: crate::Timestamp(self.mtimes[i]),
             digest,
             flags: FileFlags::from_bits_retain(self.flags[i]),
@@ -2029,5 +2041,54 @@ impl<'a> FileTagArrays<'a> {
             ima_signature,
             rdev: self.rdevs[i],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn symlink_arrays(size: u64, target: &'static str) -> FileTagArrays<'static> {
+        FileTagArrays {
+            algorithm: DigestAlgorithm::Md5,
+            modes: vec![FileMode::symbolic_link(0o777).into()],
+            users: vec!["root"],
+            groups: vec!["root"],
+            languages: None,
+            digests: vec![""],
+            mtimes: vec![0],
+            sizes: vec![size],
+            flags: vec![0],
+            links: vec![target],
+            caps: None,
+            ima_signatures: None,
+            rdevs: vec![0],
+            basenames: vec!["link"],
+            biject: vec![0],
+            dirs: vec!["/"],
+        }
+    }
+
+    #[test]
+    /// Reject a forged large symlink size before it is used to consume payload data.
+    fn rejects_symlink_size_that_does_not_match_target() {
+        let err = symlink_arrays(u64::MAX, "target").entry(0).unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::InvalidSymlinkMetadata {
+                index: 0,
+                size: u64::MAX,
+                target_len: 6,
+            }
+        ));
+    }
+
+    #[test]
+    /// Accept a symlink whose declared size matches its target's byte length.
+    fn accepts_symlink_size_that_matches_target() {
+        let entry = symlink_arrays(6, "target").entry(0).unwrap();
+
+        assert_eq!(entry.linkto(), Some("target"));
     }
 }
