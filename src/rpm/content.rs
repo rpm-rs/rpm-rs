@@ -464,6 +464,14 @@ impl<'a> Iterator for FileIterator<'a> {
                     }));
                 }
 
+                if let Err(error) = validate_cpio_payload_size(
+                    &entry_reader,
+                    payload_index,
+                    self.payload_sizes[payload_index],
+                ) {
+                    return Some(Err(error));
+                }
+
                 let mut content = Vec::new();
                 if let Err(e) = entry_reader.read_to_end(&mut content) {
                     return Some(Err(Error::Io(e)));
@@ -531,6 +539,30 @@ fn cpio_path_matches(name: &str, entry: &FileEntry<'_>) -> bool {
     let entry_path = entry.path();
     let entry_path = entry_path.to_string_lossy();
     cpio_path == entry_path.strip_prefix('/').unwrap_or(&entry_path)
+}
+
+/// Validate a standard CPIO entry against the RPM payload layout.
+///
+/// Stripped CPIO has no encoded size, and legacy ghost entries remain exempt
+/// for compatibility.
+fn validate_cpio_payload_size<R: io::Read>(
+    reader: &payload::Reader<R>,
+    file_index: usize,
+    expected_size: u64,
+) -> Result<(), Error> {
+    if let Some(actual_size) = reader.cpio_file_size()
+        && actual_size != expected_size
+    {
+        return Err(Error::FileSizeMismatch {
+            index: file_index,
+            left: FileSizeSource::RpmMetadata,
+            left_size: expected_size,
+            right: FileSizeSource::CpioArchive,
+            right_size: actual_size,
+        });
+    }
+
+    Ok(())
 }
 
 impl ExactSizeIterator for FileIterator<'_> {
@@ -696,6 +728,7 @@ impl PackageReader {
                         payload_present: false,
                     }));
                 }
+                validate_cpio_payload_size(&reader, file_index, self.payload_sizes[file_index])?;
                 let payload_present = self.payload_presence[file_index];
                 self.seen[file_index] = true;
                 self.count += 1;
@@ -877,7 +910,7 @@ mod test_payload_layout {
 /// they otherwise would make more sense as integration tests.
 #[cfg(test)]
 mod test_payload_integration {
-    use super::payload::{Builder as CpioBuilder, trailer};
+    use super::payload::{Builder as CpioBuilder, Reader as CpioReader, trailer};
     use crate::*;
     use pretty_assertions::assert_eq;
     use sha2::{Digest, Sha256};
@@ -886,6 +919,29 @@ mod test_payload_integration {
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     use std::path::Path;
+
+    #[test]
+    /// Reject a standard CPIO entry whose encoded size conflicts with RPM metadata.
+    fn rejects_cpio_size_that_does_not_match_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let mut writer = CpioBuilder::new("./mismatch").write_cpio(Vec::new(), 3);
+        writer.write_all(b"abc")?;
+        let bytes = writer.finish()?;
+        let reader = CpioReader::new(bytes.as_slice(), &[], None)?;
+
+        let err = super::validate_cpio_payload_size(&reader, 0, 4).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::FileSizeMismatch {
+                index: 0,
+                left: FileSizeSource::RpmMetadata,
+                left_size: 4,
+                right: FileSizeSource::CpioArchive,
+                right_size: 3,
+            }
+        ));
+
+        Ok(())
+    }
 
     pub mod pkgs {
         pub mod v4 {
@@ -2502,7 +2558,12 @@ mod test_payload_integration {
     fn test_ghost_record_in_payload() -> Result<(), Box<dyn std::error::Error>> {
         let mut package = Package::open(pkgs::v4::RPM_BASIC)?;
         let ghost_bytes = b"unexpected ghost content";
-        let regular_bytes = b"ordinary content";
+        let regular_size = package
+            .metadata
+            .find_file_entry(Path::new("/usr/bin/rpm-basic"))?
+            .expect("rpm-basic fixture has a regular file")
+            .size();
+        let regular_bytes = vec![b'x'; regular_size];
         package.payload = {
             let mut buf = Vec::new();
             let mut ghost = CpioBuilder::new("./var/log/rpm-basic/basic.log")
@@ -2514,7 +2575,7 @@ mod test_payload_integration {
             let mut regular = CpioBuilder::new("./usr/bin/rpm-basic")
                 .mode(0o100755)
                 .write_cpio(buf, regular_bytes.len() as u32);
-            regular.write_all(regular_bytes)?;
+            regular.write_all(&regular_bytes)?;
             buf = regular.finish()?;
             trailer(buf)?
         };

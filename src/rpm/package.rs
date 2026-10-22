@@ -1985,10 +1985,12 @@ impl<'a> FileTagArrays<'a> {
         // otherwise consume subsequent archive entries or exhaust memory.
         if mode.file_type() == FileType::SymbolicLink && self.sizes[i] != self.links[i].len() as u64
         {
-            return Err(Error::InvalidSymlinkMetadata {
+            return Err(Error::FileSizeMismatch {
                 index: i,
-                size: self.sizes[i],
-                target_len: self.links[i].len(),
+                left: FileSizeSource::RpmMetadata,
+                left_size: self.sizes[i],
+                right: FileSizeSource::SymlinkTarget,
+                right_size: self.links[i].len() as u64,
             });
         }
 
@@ -2076,10 +2078,12 @@ mod tests {
 
         assert!(matches!(
             err,
-            Error::InvalidSymlinkMetadata {
+            Error::FileSizeMismatch {
                 index: 0,
-                size: u64::MAX,
-                target_len: 6,
+                left: FileSizeSource::RpmMetadata,
+                left_size: u64::MAX,
+                right: FileSizeSource::SymlinkTarget,
+                right_size: 6,
             }
         ));
     }

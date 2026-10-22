@@ -1,8 +1,29 @@
-use std::{io, str::Utf8Error};
+use std::{fmt, io, str::Utf8Error};
 
 use thiserror::Error;
 
 use crate::{DigestAlgorithm, TimestampError, constants::format_tag_id};
+
+/// The source of a file size being compared while reading an RPM.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSizeSource {
+    /// File size from the RPM header metadata.
+    RpmMetadata,
+    /// Byte length of the symbolic link target in the RPM header.
+    SymlinkTarget,
+    /// File size encoded by a standard CPIO payload record.
+    CpioArchive,
+}
+
+impl fmt::Display for FileSizeSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RpmMetadata => f.write_str("RPM metadata"),
+            Self::SymlinkTarget => f.write_str("symlink target"),
+            Self::CpioArchive => f.write_str("CPIO archive"),
+        }
+    }
+}
 
 #[derive(Error, Debug)]
 #[non_exhaustive]
@@ -51,12 +72,14 @@ pub enum Error {
     InconsistentTagArrayLengths,
 
     #[error(
-        "invalid symbolic link metadata for file index {index}: declared size {size} does not match target length {target_len}"
+        "file size mismatch for entry {index}: {left} is {left_size} bytes, but {right} is {right_size} bytes"
     )]
-    InvalidSymlinkMetadata {
+    FileSizeMismatch {
         index: usize,
-        size: u64,
-        target_len: usize,
+        left: FileSizeSource,
+        left_size: u64,
+        right: FileSizeSource,
+        right_size: u64,
     },
 
     #[error("invalid tag value enum variant for {tag} with {variant}")]
