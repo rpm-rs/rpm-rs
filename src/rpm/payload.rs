@@ -312,6 +312,16 @@ impl<R: Read> Reader<R> {
         }
     }
 
+    /// Return the size encoded by a standard CPIO entry.
+    ///
+    /// Stripped CPIO entries omit this field and use RPM header metadata instead.
+    pub(crate) fn cpio_file_size(&self) -> Option<u64> {
+        match &self.entry {
+            RpmPayloadEntry::Cpio(entry) if !entry.is_trailer() => Some(entry.file_size() as u64),
+            RpmPayloadEntry::Cpio(_) | RpmPayloadEntry::Stripped(_) => None,
+        }
+    }
+
     /// Parses metadata for the next entry in an archive, and returns a reader
     /// that will yield the entry data.
     ///
