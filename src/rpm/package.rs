@@ -282,8 +282,20 @@ impl Package {
         let mut buf_reader = io::BufReader::new(rpm_file);
         let metadata = PackageMetadata::parse(&mut buf_reader)?;
         let payload_offset = metadata.get_package_segment_offsets().payload;
-        let payload_size = file_size.saturating_sub(payload_offset) as usize;
-        let mut payload = Vec::with_capacity(payload_size);
+        let payload_size = file_size.saturating_sub(payload_offset);
+        let payload_capacity = usize::try_from(payload_size).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "RPM payload is too large to fit in memory on this platform",
+            )
+        })?;
+        // Preallocating avoids repeated large reallocations, which can fragment glibc's heap.
+        let mut payload = Vec::new();
+        payload
+            .try_reserve_exact(payload_capacity)
+            .map_err(|error| {
+                io::Error::other(format!("failed to allocate RPM payload: {error}"))
+            })?;
         buf_reader.read_to_end(&mut payload)?;
         Ok(Package { metadata, payload })
     }
@@ -2033,7 +2045,7 @@ impl<'a> FileTagArrays<'a> {
             modified_at: crate::Timestamp(self.mtimes[i]),
             digest,
             flags: FileFlags::from_bits_retain(self.flags[i]),
-            size: self.sizes[i] as usize,
+            size: self.sizes[i],
             caps: cap,
             linkto: if self.links[i].is_empty() {
                 None
@@ -2050,10 +2062,10 @@ impl<'a> FileTagArrays<'a> {
 mod tests {
     use super::*;
 
-    fn symlink_arrays(size: u64, target: &'static str) -> FileTagArrays<'static> {
+    fn file_arrays(mode: FileMode, size: u64, target: &'static str) -> FileTagArrays<'static> {
         FileTagArrays {
             algorithm: DigestAlgorithm::Md5,
-            modes: vec![FileMode::symbolic_link(0o777).into()],
+            modes: vec![mode.into()],
             users: vec!["root"],
             groups: vec!["root"],
             languages: None,
@@ -2069,6 +2081,10 @@ mod tests {
             biject: vec![0],
             dirs: vec!["/"],
         }
+    }
+
+    fn symlink_arrays(size: u64, target: &'static str) -> FileTagArrays<'static> {
+        file_arrays(FileMode::symbolic_link(0o777), size, target)
     }
 
     #[test]
@@ -2094,5 +2110,15 @@ mod tests {
         let entry = symlink_arrays(6, "target").entry(0).unwrap();
 
         assert_eq!(entry.linkto(), Some("target"));
+    }
+
+    #[test]
+    /// Preserve 64-bit regular-file sizes without narrowing them to the host word size.
+    fn preserves_64_bit_file_sizes() {
+        let entry = file_arrays(FileMode::regular(0o644), u64::MAX, "")
+            .entry(0)
+            .unwrap();
+
+        assert_eq!(entry.size(), u64::MAX);
     }
 }

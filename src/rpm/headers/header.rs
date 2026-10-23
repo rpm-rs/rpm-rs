@@ -715,7 +715,7 @@ pub struct FileEntry<'a> {
     /// Clocks the last access time.
     pub(crate) modified_at: Timestamp,
     /// The size of this file, dirs have the inode size (which is insane)
-    pub(crate) size: usize,
+    pub(crate) size: u64,
     /// Packed major/minor device number from RPMTAG_FILERDEVS.
     pub(crate) rdev: u16,
     /// Flags describing the file or directory into three groups.
@@ -784,7 +784,7 @@ impl<'a> FileEntry<'a> {
     }
 
     /// Returns the size of this file in bytes.
-    pub fn size(&self) -> usize {
+    pub fn size(&self) -> u64 {
         self.size
     }
 
