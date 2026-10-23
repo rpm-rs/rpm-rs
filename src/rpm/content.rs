@@ -72,7 +72,7 @@ impl<'a> PayloadLayout<'a> {
 
         let mut payload_sizes = file_entries
             .iter()
-            .map(|entry| entry.size() as u64)
+            .map(|entry| entry.size())
             .collect::<Vec<_>>();
         let mut payload_presence = vec![true; file_entries.len()];
         for &index in &ghosts {
@@ -823,7 +823,7 @@ mod test_payload_layout {
     use std::borrow::Cow;
 
     /// Create a regular header entry with a controllable size and flags.
-    fn regular_entry(name: &'static str, size: usize, flags: FileFlags) -> FileEntry<'static> {
+    fn regular_entry(name: &'static str, size: u64, flags: FileFlags) -> FileEntry<'static> {
         FileEntry {
             dirname: Cow::Borrowed("/"),
             basename: Cow::Borrowed(name),
@@ -1235,7 +1235,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[0].content().unwrap_or_default().len(),
+                size: files[0].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::CONFIG,
                 digest: Some(FileDigest {
@@ -1260,7 +1260,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[1].content().unwrap_or_default().len(),
+                size: files[1].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -1284,7 +1284,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[2].content().unwrap_or_default().len(),
+                size: files[2].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
@@ -1305,7 +1305,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[3].content().unwrap_or_default().len(),
+                size: files[3].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
@@ -1327,7 +1327,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[4].content().unwrap_or_default().len(),
+                size: files[4].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -1352,7 +1352,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[5].content().unwrap_or_default().len(),
+                size: files[5].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -1376,7 +1376,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[6].content().unwrap_or_default().len(),
+                size: files[6].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
@@ -1402,7 +1402,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[7].content().unwrap_or_default().len(),
+                size: files[7].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::DOC,
                 digest: Some(FileDigest {
@@ -1427,7 +1427,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[8].content().unwrap_or_default().len(),
+                size: files[8].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -1451,7 +1451,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[9].content().unwrap_or_default().len(),
+                size: files[9].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::GHOST,
                 digest: None,
@@ -1472,7 +1472,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[10].content().unwrap_or_default().len(),
+                size: files[10].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
@@ -1539,7 +1539,7 @@ mod test_payload_integration {
                                 entry_path
                             );
                             assert_eq!(
-                                disk_content.len(),
+                                disk_content.len() as u64,
                                 file.metadata.size(),
                                 "Installed size mismatch for {:?}",
                                 entry_path
@@ -1647,7 +1647,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[0].content().unwrap_or_default().len(),
+                size: files[0].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
@@ -1669,7 +1669,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[1].content().unwrap_or_default().len(),
+                size: files[1].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::ARTIFACT,
                 digest: Some(FileDigest {
@@ -1694,7 +1694,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[2].content().unwrap_or_default().len(),
+                size: files[2].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::CONFIG,
                 digest: Some(FileDigest {
@@ -1722,7 +1722,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[3].content().unwrap_or_default().len(),
+                size: files[3].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::CONFIG | FileFlags::NOREPLACE,
                 digest: Some(FileDigest {
@@ -1750,7 +1750,7 @@ mod test_payload_integration {
                 group: Cow::from("bob"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[4].content().unwrap_or_default().len(),
+                size: files[4].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -1774,7 +1774,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[5].content().unwrap_or_default().len(),
+                size: files[5].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
@@ -1796,7 +1796,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[6].content().unwrap_or_default().len(),
+                size: files[6].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -2259,7 +2259,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: expected_sysusers.len(),
+                size: expected_sysusers.len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -2360,7 +2360,7 @@ mod test_payload_integration {
             files[1].content().unwrap_or_default().len(),
             expected_spaces.len()
         );
-        assert_eq!(files[1].metadata.size, expected_spaces.len());
+        assert_eq!(files[1].metadata.size, expected_spaces.len() as u64);
         assert_eq!(files[1].content().unwrap_or_default().len(), 31);
 
         // File 2: /opt/rpm-file-types/rpm-rs-logo.png (binary content)
@@ -2391,7 +2391,7 @@ mod test_payload_integration {
             files[2].content().unwrap_or_default().len(),
             expected_png.len()
         );
-        assert_eq!(files[2].metadata.size, expected_png.len());
+        assert_eq!(files[2].metadata.size, expected_png.len() as u64);
         assert_eq!(files[2].content().unwrap_or_default().len(), 2017);
         // Verify PNG magic bytes
         assert_eq!(
@@ -2558,11 +2558,13 @@ mod test_payload_integration {
     fn test_ghost_record_in_payload() -> Result<(), Box<dyn std::error::Error>> {
         let mut package = Package::open(pkgs::v4::RPM_BASIC)?;
         let ghost_bytes = b"unexpected ghost content";
-        let regular_size = package
-            .metadata
-            .find_file_entry(Path::new("/usr/bin/rpm-basic"))?
-            .expect("rpm-basic fixture has a regular file")
-            .size();
+        let regular_size = usize::try_from(
+            package
+                .metadata
+                .find_file_entry(Path::new("/usr/bin/rpm-basic"))?
+                .expect("rpm-basic fixture has a regular file")
+                .size(),
+        )?;
         let regular_bytes = vec![b'x'; regular_size];
         package.payload = {
             let mut buf = Vec::new();

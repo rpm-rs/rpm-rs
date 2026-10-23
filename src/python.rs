@@ -283,7 +283,7 @@ impl PyFileEntry {
     /// The size of the file in bytes.
     /// Note: for directories this is the inode size, not the directory content size.
     #[getter]
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         self.0.size()
     }
 
