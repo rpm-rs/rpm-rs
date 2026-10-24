@@ -182,6 +182,27 @@ mod validation {
         );
     }
 
+    #[test]
+    /// Reject destination paths that could escape an extraction directory.
+    fn test_builder_rejects_parent_directory_destination() {
+        for destination in ["/../escaped", "./../escaped"] {
+            let mut builder = PackageBuilder::new("traversal", "1", "MIT", "noarch", "test");
+
+            let err = match builder.with_file_contents(b"payload", FileOptions::new(destination)) {
+                Ok(_) => panic!("builder accepted traversal destination {destination}"),
+                Err(err) => err,
+            };
+
+            assert!(matches!(
+                err,
+                Error::InvalidDestinationPath {
+                    path,
+                    desc: "path contains a parent-directory component",
+                } if path == destination
+            ));
+        }
+    }
+
     /// Adding the same path explicitly twice should produce an error.
     #[test]
     fn test_duplicate_explicit_add_still_errors() {

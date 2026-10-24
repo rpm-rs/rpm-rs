@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Reject RPM payload entries whose sizes conflict with metadata, including malformed symlinks.
+- Reject paths that escape the destination through traversal or symbolic links when building or extracting RPM contents.
 
 ## 0.30.2
 
