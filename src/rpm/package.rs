@@ -2047,11 +2047,8 @@ impl<'a> FileTagArrays<'a> {
             flags: FileFlags::from_bits_retain(self.flags[i]),
             size: self.sizes[i],
             caps: cap,
-            linkto: if self.links[i].is_empty() {
-                None
-            } else {
-                Some(Cow::Borrowed(self.links[i]))
-            },
+            linkto: (mode.file_type() == FileType::SymbolicLink)
+                .then(|| Cow::Borrowed(self.links[i])),
             ima_signature,
             rdev: self.rdevs[i],
         })
@@ -2110,6 +2107,14 @@ mod tests {
         let entry = symlink_arrays(6, "target").entry(0).unwrap();
 
         assert_eq!(entry.linkto(), Some("target"));
+    }
+
+    #[test]
+    /// Preserve an empty symlink target when its declared size is zero.
+    fn preserves_empty_symlink_target() {
+        let entry = symlink_arrays(0, "").entry(0).unwrap();
+
+        assert_eq!(entry.linkto(), Some(""));
     }
 
     #[test]
