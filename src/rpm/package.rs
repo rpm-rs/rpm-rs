@@ -1993,17 +1993,22 @@ impl<'a> FileTagArrays<'a> {
 
     fn entry(&self, i: usize) -> Result<FileEntry<'a>, Error> {
         let mode = FileMode::from(self.modes[i]);
-        // Symlink payload data is skipped according to this size, so malformed metadata could
-        // otherwise consume subsequent archive entries or exhaust memory.
-        if mode.file_type() == FileType::SymbolicLink && self.sizes[i] != self.links[i].len() as u64
-        {
-            return Err(Error::FileSizeMismatch {
-                index: i,
-                left: FileSizeSource::RpmMetadata,
-                left_size: self.sizes[i],
-                right: FileSizeSource::SymlinkTarget,
-                right_size: self.links[i].len() as u64,
-            });
+        if mode.file_type() == FileType::SymbolicLink {
+            if self.links[i].is_empty() {
+                return Err(Error::EmptySymlinkTarget { index: i });
+            }
+
+            // Symlink payload data is skipped according to this size, so malformed metadata
+            // could otherwise consume subsequent archive entries or exhaust memory.
+            if self.sizes[i] != self.links[i].len() as u64 {
+                return Err(Error::FileSizeMismatch {
+                    index: i,
+                    left: FileSizeSource::RpmMetadata,
+                    left_size: self.sizes[i],
+                    right: FileSizeSource::SymlinkTarget,
+                    right_size: self.links[i].len() as u64,
+                });
+            }
         }
 
         let dir_index = self.biject[i] as usize;
@@ -2047,11 +2052,8 @@ impl<'a> FileTagArrays<'a> {
             flags: FileFlags::from_bits_retain(self.flags[i]),
             size: self.sizes[i],
             caps: cap,
-            linkto: if self.links[i].is_empty() {
-                None
-            } else {
-                Some(Cow::Borrowed(self.links[i]))
-            },
+            linkto: (mode.file_type() == FileType::SymbolicLink)
+                .then(|| Cow::Borrowed(self.links[i])),
             ima_signature,
             rdev: self.rdevs[i],
         })
@@ -2110,6 +2112,14 @@ mod tests {
         let entry = symlink_arrays(6, "target").entry(0).unwrap();
 
         assert_eq!(entry.linkto(), Some("target"));
+    }
+
+    #[test]
+    /// Reject a zero-sized symlink because an empty target cannot be extracted.
+    fn rejects_empty_symlink_target() {
+        let err = symlink_arrays(0, "").entry(0).unwrap_err();
+
+        assert!(matches!(err, Error::EmptySymlinkTarget { index: 0 }));
     }
 
     #[test]
