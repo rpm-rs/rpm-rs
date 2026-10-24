@@ -13,6 +13,12 @@ use std::{
 use super::*;
 use crate::{Timestamp, constants::*, errors::*};
 
+// These limits match librpm's header sanity checks and bound parsing allocations.
+const HEADER_MAX_ENTRIES: u32 = 0x0000_ffff;
+const HEADER_MAX_ARRAY_ITEMS: u32 = 0x000f_ffff;
+const HEADER_MAX_DATA_SIZE: usize = 0x0fff_ffff;
+const HEADER_MAX_SIZE: usize = 256 * 1024 * 1024;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Header<T: Tag> {
     pub(crate) index_header: IndexHeader,
@@ -73,17 +79,25 @@ where
         input.read_exact(&mut buf)?;
         let index_header = IndexHeader::parse(&buf)?;
         // read rest of header (index + data portions)
-        let size_rest =
-            (index_header.data_section_size + index_header.num_entries * INDEX_ENTRY_SIZE) as usize;
-        let mut buf = vec![0; size_rest];
+        let size_rest = index_header.checked_size()?;
+        let mut buf = Vec::new();
+        buf.try_reserve_exact(size_rest)
+            .map_err(|_| Error::HeaderAllocationFailed { size: size_rest })?;
+        buf.resize(size_rest, 0);
         input.read_exact(&mut buf)?;
         Self::parse_header(index_header, &buf[..])
     }
 
     /// Given a pre-parsed index header, parse the rest of the header
     fn parse_header(index_header: IndexHeader, mut bytes: &[u8]) -> Result<Header<T>, Error> {
+        index_header.checked_size()?;
         // parse all entries
         let mut entries: Vec<IndexEntry<T>> = Vec::new();
+        entries
+            .try_reserve_exact(index_header.num_entries as usize)
+            .map_err(|_| Error::HeaderAllocationFailed {
+                size: index_header.num_entries as usize * std::mem::size_of::<IndexEntry<T>>(),
+            })?;
         let mut buf_len = bytes.len();
         for _ in 0..index_header.num_entries {
             let (rest, entry) = IndexEntry::parse(bytes)?;
@@ -95,7 +109,15 @@ where
 
         debug_assert_eq!(bytes.len(), index_header.data_section_size as usize);
 
-        let store = Vec::from(bytes);
+        for entry in &entries {
+            validate_entry_data(bytes, entry)?;
+        }
+
+        let mut store = Vec::new();
+        store
+            .try_reserve_exact(bytes.len())
+            .map_err(|_| Error::HeaderAllocationFailed { size: bytes.len() })?;
+        store.extend_from_slice(bytes);
 
         // Check if RPMTAG_ENCODING is present and set to "utf-8". If so, the
         // header is guaranteed to contain only UTF-8 strings, and invalid UTF-8
@@ -103,28 +125,34 @@ where
         let encoding_is_utf8 = entries.iter().any(|e| {
             e.tag == IndexTag::RPMTAG_ENCODING.to_u32()
                 && matches!(&e.data, IndexData::StringTag(_))
-                && bytes[e.offset as usize..].starts_with(b"utf-8\0")
+                && entry_remaining(bytes, e)
+                    .is_ok_and(|remaining| remaining.starts_with(b"utf-8\0"))
         });
 
         // add data to entries
         for entry in &mut entries {
-            let remaining = &bytes[entry.offset as usize..];
+            let remaining = entry_remaining(bytes, entry)?;
 
             match &mut entry.data {
                 IndexData::Null => {}
                 IndexData::Char(chars) => {
+                    reserve_entry_items(chars, entry.num_items)?;
                     parse_binary_entry(remaining, entry.num_items, chars, "Char")?;
                 }
                 IndexData::Int8(ints) => {
+                    reserve_entry_items(ints, entry.num_items)?;
                     parse_binary_entry(remaining, entry.num_items, ints, "Int8")?;
                 }
                 IndexData::Int16(ints) => {
+                    reserve_entry_items(ints, entry.num_items)?;
                     parse_entry_data_number(remaining, entry.num_items, ints, be_u16)?;
                 }
                 IndexData::Int32(ints) => {
+                    reserve_entry_items(ints, entry.num_items)?;
                     parse_entry_data_number(remaining, entry.num_items, ints, be_u32)?;
                 }
                 IndexData::Int64(ints) => {
+                    reserve_entry_items(ints, entry.num_items)?;
                     parse_entry_data_number(remaining, entry.num_items, ints, be_u64)?;
                 }
                 // String data lives in `store` and is read on access via offset/num_items.
@@ -283,10 +311,7 @@ where
             // Non-empty: builder-created entry with inline data.
             // Empty: parsed entry, read directly from store.
             IndexData::Bin(d) if !d.is_empty() => Ok(d.as_slice()),
-            IndexData::Bin(_) => {
-                let start = entry.offset as usize;
-                Ok(&self.store[start..start + entry.num_items as usize])
-            }
+            IndexData::Bin(_) => entry_data(&self.store, entry, entry.num_items as usize),
             _ => Err(Error::UnexpectedTagDataType {
                 expected_data_type: "binary",
                 actual_data_type: entry.data.to_string(),
@@ -303,7 +328,7 @@ where
             // Empty: valid UTF-8 (or not yet validated), read directly from store.
             IndexData::StringTag(s) if !s.is_empty() => Ok(s.as_str()),
             IndexData::StringTag(_) => {
-                let remaining = &self.store[entry.offset as usize..];
+                let remaining = entry_remaining(&self.store, entry)?;
                 let nul = memchr::memchr(0, remaining).ok_or(Error::UnterminatedHeaderString)?;
                 std::str::from_utf8(&remaining[..nul]).map_err(|_| Error::InvalidUtf8 {
                     tag: entry.tag.to_string(),
@@ -313,7 +338,7 @@ where
             // e.g. PAYLOADSHA256
             IndexData::StringArray(a) if a.len() == 1 => Ok(&a[0]),
             IndexData::StringArray(_) if entry.num_items == 1 => {
-                let remaining = &self.store[entry.offset as usize..];
+                let remaining = entry_remaining(&self.store, entry)?;
                 let nul = memchr::memchr(0, remaining).ok_or(Error::UnterminatedHeaderString)?;
                 std::str::from_utf8(&remaining[..nul]).map_err(|_| Error::InvalidUtf8 {
                     tag: entry.tag.to_string(),
@@ -335,7 +360,7 @@ where
             // rather than an I18NString array.
             IndexData::StringTag(s) if !s.is_empty() => Ok(s.as_str()),
             IndexData::StringTag(_) => {
-                let remaining = &self.store[entry.offset as usize..];
+                let remaining = entry_remaining(&self.store, entry)?;
                 let nul = memchr::memchr(0, remaining).ok_or(Error::UnterminatedHeaderString)?;
                 std::str::from_utf8(&remaining[..nul]).map_err(|_| Error::InvalidUtf8 {
                     tag: entry.tag.to_string(),
@@ -346,7 +371,7 @@ where
             IndexData::I18NString(strings) if !strings.is_empty() => Ok(strings[0].as_str()),
             IndexData::I18NString(_) => {
                 // @todo: an actual implementation that doesn't just get the first string from the table
-                let remaining = &self.store[entry.offset as usize..];
+                let remaining = entry_remaining(&self.store, entry)?;
                 let nul = memchr::memchr(0, remaining).ok_or(Error::UnterminatedHeaderString)?;
                 std::str::from_utf8(&remaining[..nul]).map_err(|_| Error::InvalidUtf8 {
                     tag: entry.tag.to_string(),
@@ -375,8 +400,13 @@ where
                 Ok(strings.iter().map(|s| s.as_str()).collect())
             }
             IndexData::StringArray(_) | IndexData::I18NString(_) => {
-                let mut remaining = &self.store[entry.offset as usize..];
-                let mut result = Vec::with_capacity(entry.num_items as usize);
+                let mut remaining = entry_remaining(&self.store, entry)?;
+                let mut result = Vec::new();
+                result
+                    .try_reserve_exact(entry.num_items as usize)
+                    .map_err(|_| Error::HeaderAllocationFailed {
+                        size: entry.num_items as usize * std::mem::size_of::<&str>(),
+                    })?;
                 for _ in 0..entry.num_items {
                     let nul =
                         memchr::memchr(0, remaining).ok_or(Error::UnterminatedHeaderString)?;
@@ -393,7 +423,7 @@ where
             // a single value exists. e.g. scriptlet "prog" tags with a single interpreter argument
             IndexData::StringTag(s) if !s.is_empty() => Ok(vec![s.as_str()]),
             IndexData::StringTag(_) => {
-                let remaining = &self.store[entry.offset as usize..];
+                let remaining = entry_remaining(&self.store, entry)?;
                 let nul = memchr::memchr(0, remaining).ok_or(Error::UnterminatedHeaderString)?;
                 let s = std::str::from_utf8(&remaining[..nul]).map_err(|_| Error::InvalidUtf8 {
                     tag: entry.tag.to_string(),
@@ -715,7 +745,7 @@ pub struct FileEntry<'a> {
     /// Clocks the last access time.
     pub(crate) modified_at: Timestamp,
     /// The size of this file, dirs have the inode size (which is insane)
-    pub(crate) size: usize,
+    pub(crate) size: u64,
     /// Packed major/minor device number from RPMTAG_FILERDEVS.
     pub(crate) rdev: u16,
     /// Flags describing the file or directory into three groups.
@@ -784,7 +814,7 @@ impl<'a> FileEntry<'a> {
     }
 
     /// Returns the size of this file in bytes.
-    pub fn size(&self) -> usize {
+    pub fn size(&self) -> u64 {
         self.size
     }
 
@@ -863,7 +893,6 @@ where
     E: nom::error::ParseError<&'a [u8]>,
     F: Fn(&'a [u8]) -> nom::IResult<&'a [u8], T, E>,
 {
-    items.reserve_exact(num_items as usize);
     for _ in 0..num_items {
         let (rest, data) = parser(input)?;
         items.push(data);
@@ -889,6 +918,105 @@ fn parse_binary_entry(
     Ok(())
 }
 
+fn reserve_entry_items<T>(items: &mut Vec<T>, item_count: u32) -> Result<(), Error> {
+    let item_count = item_count as usize;
+    items
+        .try_reserve_exact(item_count)
+        .map_err(|_| Error::HeaderAllocationFailed {
+            size: item_count * std::mem::size_of::<T>(),
+        })
+}
+
+fn entry_remaining<'a, T>(store: &'a [u8], entry: &IndexEntry<T>) -> Result<&'a [u8], Error>
+where
+    T: num::FromPrimitive,
+{
+    let offset =
+        usize::try_from(entry.offset).map_err(|_| Error::HeaderEntryOffsetOutOfBounds {
+            tag: entry.tag,
+            offset: entry.offset,
+            store_size: store.len(),
+        })?;
+    store
+        .get(offset..)
+        .ok_or(Error::HeaderEntryOffsetOutOfBounds {
+            tag: entry.tag,
+            offset: entry.offset,
+            store_size: store.len(),
+        })
+}
+
+fn entry_data<'a, T>(store: &'a [u8], entry: &IndexEntry<T>, size: usize) -> Result<&'a [u8], Error>
+where
+    T: num::FromPrimitive,
+{
+    let remaining = entry_remaining(store, entry)?;
+    remaining
+        .get(..size)
+        .ok_or(Error::HeaderEntryDataOutOfBounds {
+            tag: entry.tag,
+            offset: entry.offset,
+            size,
+            store_size: store.len(),
+        })
+}
+
+fn validate_entry_data<T>(store: &[u8], entry: &IndexEntry<T>) -> Result<(), Error>
+where
+    T: num::FromPrimitive,
+{
+    let remaining = entry_remaining(store, entry)?;
+    if !matches!(&entry.data, IndexData::Null | IndexData::Bin(_))
+        && entry.num_items > HEADER_MAX_ARRAY_ITEMS
+    {
+        return Err(Error::HeaderArrayItemCountLimitExceeded {
+            tag: entry.tag,
+            count: entry.num_items,
+            limit: HEADER_MAX_ARRAY_ITEMS,
+        });
+    }
+    let item_size = match entry.data {
+        IndexData::Null => return Ok(()),
+        IndexData::Char(_) | IndexData::Int8(_) | IndexData::Bin(_) => 1,
+        IndexData::Int16(_) => 2,
+        IndexData::Int32(_) => 4,
+        IndexData::Int64(_) => 8,
+        IndexData::StringTag(_) => {
+            validate_string_count(remaining, 1)?;
+            return Ok(());
+        }
+        IndexData::StringArray(_) | IndexData::I18NString(_) => {
+            validate_string_count(remaining, entry.num_items)?;
+            return Ok(());
+        }
+    };
+    let size = (entry.num_items as usize).checked_mul(item_size).ok_or(
+        Error::HeaderEntryDataOutOfBounds {
+            tag: entry.tag,
+            offset: entry.offset,
+            size: usize::MAX,
+            store_size: store.len(),
+        },
+    )?;
+    if size > remaining.len() {
+        return Err(Error::HeaderEntryDataOutOfBounds {
+            tag: entry.tag,
+            offset: entry.offset,
+            size,
+            store_size: store.len(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_string_count(mut input: &[u8], count: u32) -> Result<(), Error> {
+    for _ in 0..count {
+        let nul = memchr::memchr(0, input).ok_or(Error::UnterminatedHeaderString)?;
+        input = &input[nul + 1..];
+    }
+    Ok(())
+}
+
 /// A header keeping track of all other header records.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IndexHeader {
@@ -903,6 +1031,40 @@ pub(crate) struct IndexHeader {
 }
 
 impl IndexHeader {
+    fn checked_size(&self) -> Result<usize, Error> {
+        if self.num_entries > HEADER_MAX_ENTRIES {
+            return Err(Error::HeaderEntryCountLimitExceeded {
+                count: self.num_entries,
+                limit: HEADER_MAX_ENTRIES,
+            });
+        }
+        let data_size = self.data_section_size as usize;
+        if data_size > HEADER_MAX_DATA_SIZE {
+            return Err(Error::HeaderSizeLimitExceeded {
+                section: "data store",
+                size: data_size,
+                limit: HEADER_MAX_DATA_SIZE,
+            });
+        }
+        let index_size = (self.num_entries as usize)
+            .checked_mul(INDEX_ENTRY_SIZE as usize)
+            .expect("header entry limit keeps index size representable");
+        let size_rest = index_size
+            .checked_add(data_size)
+            .expect("header limits keep header size representable");
+        let total_size = size_rest
+            .checked_add(INDEX_HEADER_SIZE as usize)
+            .expect("header limits keep header size representable");
+        if total_size > HEADER_MAX_SIZE {
+            return Err(Error::HeaderSizeLimitExceeded {
+                section: "total",
+                size: total_size,
+                limit: HEADER_MAX_SIZE,
+            });
+        }
+        Ok(size_rest)
+    }
+
     // 16 bytes
     pub(crate) fn parse(input: &[u8]) -> Result<Self, Error> {
         // first three bytes are magic
@@ -1248,6 +1410,95 @@ impl IndexData {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    /// Reject a header entry count before it can drive an oversized allocation.
+    fn rejects_excessive_header_entry_count() -> Result<(), Box<dyn std::error::Error>> {
+        let index_header = IndexHeader::new(HEADER_MAX_ENTRIES + 1, 0);
+        let mut bytes = Vec::new();
+        index_header.write(&mut bytes)?;
+        let mut input = io::BufReader::new(io::Cursor::new(bytes));
+
+        let err = Header::<IndexTag>::parse(&mut input).unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::HeaderEntryCountLimitExceeded {
+                count,
+                limit: HEADER_MAX_ENTRIES,
+            } if count == HEADER_MAX_ENTRIES + 1
+        ));
+        Ok(())
+    }
+
+    #[test]
+    /// Reject an oversized declared store before attempting to allocate it.
+    fn rejects_excessive_header_store_size() -> Result<(), Box<dyn std::error::Error>> {
+        let index_header = IndexHeader::new(0, HEADER_MAX_DATA_SIZE as u32 + 1);
+        let mut bytes = Vec::new();
+        index_header.write(&mut bytes)?;
+        let mut input = io::BufReader::new(io::Cursor::new(bytes));
+
+        let err = Header::<IndexTag>::parse(&mut input).unwrap_err();
+
+        assert!(matches!(err, Error::HeaderSizeLimitExceeded { .. }));
+        Ok(())
+    }
+
+    #[test]
+    /// Reject a negative entry offset instead of converting it into an invalid slice index.
+    fn rejects_negative_entry_offset() -> Result<(), Box<dyn std::error::Error>> {
+        let index_header = IndexHeader::new(1, 1);
+        let mut entry = IndexEntry::new(IndexTag::RPMTAG_NAME, IndexData::Bin(Vec::new()));
+        entry.offset = -1;
+        entry.num_items = 1;
+        let mut bytes = Vec::new();
+        entry.write_index(&mut bytes)?;
+        bytes.push(0);
+
+        let err = Header::<IndexTag>::parse_header(index_header, &bytes).unwrap_err();
+
+        assert!(matches!(err, Error::HeaderEntryOffsetOutOfBounds { .. }));
+        Ok(())
+    }
+
+    #[test]
+    /// Reject entry data whose declared extent reaches beyond the header store.
+    fn rejects_entry_data_past_store_end() -> Result<(), Box<dyn std::error::Error>> {
+        let index_header = IndexHeader::new(1, 4);
+        let mut entry = IndexEntry::new(IndexTag::RPMTAG_NAME, IndexData::Int32(Vec::new()));
+        entry.num_items = 2;
+        let mut bytes = Vec::new();
+        entry.write_index(&mut bytes)?;
+        bytes.extend_from_slice(&0_u32.to_be_bytes());
+
+        let err = Header::<IndexTag>::parse_header(index_header, &bytes).unwrap_err();
+
+        assert!(matches!(err, Error::HeaderEntryDataOutOfBounds { .. }));
+        Ok(())
+    }
+
+    #[test]
+    /// Reject an oversized non-binary array before allocating its decoded values.
+    fn rejects_excessive_header_array_item_count() -> Result<(), Box<dyn std::error::Error>> {
+        let index_header = IndexHeader::new(1, 0);
+        let mut entry = IndexEntry::new(IndexTag::RPMTAG_NAME, IndexData::Int8(Vec::new()));
+        entry.num_items = HEADER_MAX_ARRAY_ITEMS + 1;
+        let mut bytes = Vec::new();
+        entry.write_index(&mut bytes)?;
+
+        let err = Header::<IndexTag>::parse_header(index_header, &bytes).unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::HeaderArrayItemCountLimitExceeded {
+                count,
+                limit: HEADER_MAX_ARRAY_ITEMS,
+                ..
+            } if count == HEADER_MAX_ARRAY_ITEMS + 1
+        ));
+        Ok(())
+    }
 
     #[test]
     fn test_region_tag() -> Result<(), Box<dyn std::error::Error>> {

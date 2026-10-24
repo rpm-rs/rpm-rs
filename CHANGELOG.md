@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Breaking Changes
+
+- `FileEntry::size()` now returns `u64` instead of `usize`.
+
+### Fixed
+
+- Reject RPM payload entries whose sizes conflict with metadata, including malformed symlinks.
+- Reject extraction paths that escape the destination through traversal or symbolic links.
+- Reject oversized headers and entries that reference data outside their header store.
+- Preserve empty symlink targets instead of treating them as absent metadata.
+
 ## 0.30.2
 
 ### Fixed
