@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     fs, io,
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 #[cfg(unix)]
@@ -176,6 +176,179 @@ fn symlink(_original: &Path, _link: &Path) -> Result<(), Error> {
     Err(Error::UnsupportedSymlink)
 }
 
+/// Convert an RPM path into a path relative to the extraction root.
+fn extraction_relative_path(path: &Path) -> Result<PathBuf, Error> {
+    let relative = path.strip_prefix(Path::new("/")).unwrap_or(path);
+    let mut sanitized = PathBuf::new();
+
+    for component in relative.components() {
+        match component {
+            Component::Normal(component) => sanitized.push(component),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(Error::InvalidDestinationPath {
+                    path: path.display().to_string(),
+                    desc: "path contains a parent-directory component",
+                });
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(Error::InvalidDestinationPath {
+                    path: path.display().to_string(),
+                    desc: "path is not relative to the extraction root",
+                });
+            }
+        }
+    }
+
+    Ok(sanitized)
+}
+
+/// Create a directory below `root` without traversing symbolic links.
+fn ensure_safe_directory(root: &Path, relative: &Path) -> Result<PathBuf, Error> {
+    let mut directory = root.to_path_buf();
+
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            unreachable!("extraction paths are sanitized before directory creation");
+        };
+        directory.push(component);
+
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(Error::InvalidDestinationPath {
+                    path: directory.display().to_string(),
+                    desc: "path contains a symbolic link",
+                });
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(Error::InvalidDestinationPath {
+                    path: directory.display().to_string(),
+                    desc: "path contains a non-directory component",
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match fs::create_dir(&directory) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        let metadata = fs::symlink_metadata(&directory)?;
+                        if metadata.file_type().is_symlink() {
+                            return Err(Error::InvalidDestinationPath {
+                                path: directory.display().to_string(),
+                                desc: "path contains a symbolic link",
+                            });
+                        }
+                        if !metadata.is_dir() {
+                            return Err(Error::InvalidDestinationPath {
+                                path: directory.display().to_string(),
+                                desc: "path contains a non-directory component",
+                            });
+                        }
+                    }
+                    Err(error) => return Err(Error::Io(error)),
+                }
+            }
+            Err(error) => return Err(Error::Io(error)),
+        }
+    }
+
+    Ok(directory)
+}
+
+/// Resolve an RPM entry path and ensure its parent directory remains below `root`.
+fn extraction_path(root: &Path, path: &Path) -> Result<PathBuf, Error> {
+    let relative = extraction_relative_path(path)?;
+    if relative.as_os_str().is_empty() {
+        return Err(Error::InvalidDestinationPath {
+            path: path.display().to_string(),
+            desc: "path resolves to the extraction root",
+        });
+    }
+
+    let parent = relative
+        .parent()
+        .expect("non-empty relative path has a parent");
+    ensure_safe_directory(root, parent)?;
+    Ok(root.join(relative))
+}
+
+/// Reject a symbolic-link destination before an operation would follow it.
+fn reject_symlink_destination(path: &Path) -> Result<(), Error> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(Error::InvalidDestinationPath {
+            path: path.display().to_string(),
+            desc: "destination is a symbolic link",
+        }),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::Io(error)),
+    }
+}
+
+#[cfg(test)]
+mod extraction_path_tests {
+    use super::*;
+
+    #[test]
+    /// Reject package paths that would escape the extraction directory.
+    fn rejects_parent_directory_components() {
+        let err = extraction_relative_path(Path::new("/usr/../etc/passwd")).unwrap_err();
+
+        assert!(matches!(err, Error::InvalidDestinationPath { .. }));
+    }
+
+    #[test]
+    /// Reject traversal paths before an RPM entry can be written outside the destination.
+    fn extract_rejects_parent_directory_components() -> Result<(), Box<dyn std::error::Error>> {
+        let mut builder = crate::PackageBuilder::new("traversal", "1", "MIT", "noarch", "test");
+        builder.with_file_contents(b"payload", crate::FileOptions::new("/../escaped"))?;
+        let package = builder.build()?;
+        let temp_dir = tempfile::tempdir()?;
+        let destination = temp_dir.path().join("destination");
+
+        let err = package.extract(&destination).unwrap_err();
+
+        assert!(matches!(err, Error::InvalidDestinationPath { .. }));
+        assert!(!temp_dir.path().join("escaped").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    /// Refuse to create a child below a symlink that points outside the extraction root.
+    fn rejects_symlinked_directory_component() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = temp_dir.path().join("root");
+        let outside = temp_dir.path().join("outside");
+        fs::create_dir(&root)?;
+        fs::create_dir(&outside)?;
+        std::os::unix::fs::symlink(&outside, root.join("link"))?;
+
+        let err = ensure_safe_directory(&root, Path::new("link/child")).unwrap_err();
+
+        assert!(matches!(err, Error::InvalidDestinationPath { .. }));
+        assert!(!outside.join("child").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    /// Refuse to overwrite a symlink destination that could redirect a file write.
+    fn rejects_symlink_destination() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let target = temp_dir.path().join("target");
+        let link = temp_dir.path().join("link");
+        fs::write(&target, b"original")?;
+        std::os::unix::fs::symlink(&target, &link)?;
+
+        let err = reject_symlink_destination(&link).unwrap_err();
+
+        assert!(matches!(err, Error::InvalidDestinationPath { .. }));
+        assert_eq!(fs::read(target)?, b"original");
+        Ok(())
+    }
+}
+
 impl Package {
     /// Iterate over the file contents of the package payload.
     ///
@@ -240,10 +413,8 @@ impl Package {
 
         // pull every base directory name in the package and create the directory in advance
         for dir in &dirs {
-            let dir_path = dest
-                .as_ref()
-                .join(Path::new(dir).strip_prefix("/").unwrap_or(dest.as_ref()));
-            fs::create_dir_all(&dir_path)?;
+            let relative = extraction_relative_path(Path::new(dir))?;
+            ensure_safe_directory(dest.as_ref(), &relative)?;
         }
 
         let layout = PayloadLayout::new(&self.metadata, self.metadata.get_file_entries()?);
@@ -264,12 +435,11 @@ impl Package {
                 continue;
             }
             let entry_path = file_entry.path();
-            let file_path = dest
-                .as_ref()
-                .join(entry_path.strip_prefix("/").unwrap_or(dest.as_ref()));
+            let file_path = extraction_path(dest.as_ref(), &entry_path)?;
             match file_entry.file_type() {
                 FileType::Dir => {
-                    fs::create_dir_all(&file_path)?;
+                    let relative = extraction_relative_path(&entry_path)?;
+                    ensure_safe_directory(dest.as_ref(), &relative)?;
                     #[cfg(unix)]
                     {
                         let perms = fs::Permissions::from_mode(file_entry.permissions().into());
@@ -295,6 +465,7 @@ impl Package {
                     let content = file.content.as_deref().ok_or_else(|| {
                         Error::Io(io::Error::new(io::ErrorKind::InvalidData, missing_content))
                     })?;
+                    reject_symlink_destination(&file_path)?;
                     let mut f = fs::File::create(&file_path)?;
                     f.write_all(content)?;
                     #[cfg(unix)]
