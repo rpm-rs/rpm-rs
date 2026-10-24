@@ -68,6 +68,39 @@ pub enum Error {
     #[error("invalid tag array index {tag} with {index} while bounded at {bound}")]
     InvalidTagIndex { tag: String, index: u32, bound: u32 },
 
+    #[error("header {section} size {size} exceeds the {limit}-byte limit")]
+    HeaderSizeLimitExceeded {
+        section: &'static str,
+        size: usize,
+        limit: usize,
+    },
+
+    #[error("header index contains {count} entries, exceeding the {limit}-entry limit")]
+    HeaderEntryCountLimitExceeded { count: u32, limit: u32 },
+
+    #[error("header entry {tag} has {count} items, exceeding the {limit}-item limit")]
+    HeaderArrayItemCountLimitExceeded { tag: u32, count: u32, limit: u32 },
+
+    #[error("unable to allocate {size} bytes while reading an RPM header")]
+    HeaderAllocationFailed { size: usize },
+
+    #[error("header entry {tag} has invalid data offset {offset} for a {store_size}-byte store")]
+    HeaderEntryOffsetOutOfBounds {
+        tag: u32,
+        offset: i32,
+        store_size: usize,
+    },
+
+    #[error(
+        "header entry {tag} at offset {offset} needs {size} bytes, exceeding its {store_size}-byte store"
+    )]
+    HeaderEntryDataOutOfBounds {
+        tag: u32,
+        offset: i32,
+        size: usize,
+        store_size: usize,
+    },
+
     #[error("related tag arrays have inconsistent lengths")]
     InconsistentTagArrayLengths,
 
