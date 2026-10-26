@@ -1172,6 +1172,49 @@ fn test_scriptlets_package() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Rewrite the item count of one main-header index entry in raw package bytes.
+fn set_main_header_entry_count(bytes: &mut [u8], tag: IndexTag, count: u32) {
+    let metadata = PackageMetadata::parse(&mut std::io::Cursor::new(&*bytes)).unwrap();
+    let header = metadata.get_package_segment_offsets().header as usize;
+    let word = |bytes: &[u8], at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+    let num_entries = word(bytes, header + 8) as usize;
+    let entry = (0..num_entries)
+        .map(|i| header + 16 + i * 16)
+        .find(|&entry| word(bytes, entry) == tag as u32)
+        .expect("fixture has the tag");
+    bytes[entry + 12..entry + 16].copy_from_slice(&count.to_be_bytes());
+}
+
+/// A trigger header whose parallel arrays disagree must be rejected, not index out of bounds.
+#[test]
+fn test_triggers_with_inconsistent_arrays() -> Result<(), Box<dyn std::error::Error>> {
+    let original = std::fs::read(common::pkgs::v6::RPM_SCRIPTLETS)?;
+    type Getter = fn(&PackageMetadata) -> Result<Vec<Trigger>, Error>;
+    let cases: [(IndexTag, Getter); 3] = [
+        (
+            IndexTag::RPMTAG_TRIGGERSCRIPTPROG,
+            PackageMetadata::get_triggers,
+        ),
+        (
+            IndexTag::RPMTAG_FILETRIGGERSCRIPTPROG,
+            PackageMetadata::get_file_triggers,
+        ),
+        (IndexTag::RPMTAG_TRIGGERINDEX, PackageMetadata::get_triggers),
+    ];
+    for (tag, get) in cases {
+        for count in [0, 1] {
+            let mut bytes = original.clone();
+            set_main_header_entry_count(&mut bytes, tag, count);
+            let metadata = PackageMetadata::parse(&mut std::io::Cursor::new(&bytes[..]))?;
+            assert!(
+                matches!(get(&metadata), Err(Error::InconsistentTagArrayLengths)),
+                "{tag:?} with count {count}"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Parse the rpm-rich-deps fixture and verify rich (boolean) dependencies
 /// are correctly read across all dependency types.
 #[test]
@@ -1351,5 +1394,201 @@ fn test_find_file_entry() -> Result<(), Box<dyn std::error::Error>> {
             .is_none()
     );
 
+    Ok(())
+}
+
+/// Without a signature backend, OpenPGP signatures cannot be written. Operations that would
+/// rewrite the signature header must fail instead of silently dropping signatures.
+#[cfg(not(feature = "signature-meta"))]
+mod without_signature_backend {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    const SIGNED: [&str; 2] = [
+        common::pkgs::v4::RPM_BASIC_RSA_SIGNED,
+        common::pkgs::v6::RPM_BASIC_RSA_SIGNED,
+    ];
+
+    #[test]
+    fn test_apply_signature_in_place_leaves_file_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        for src in SIGNED {
+            let path = dir.path().join("package.rpm");
+            std::fs::copy(src, &path)?;
+            let original = std::fs::read(&path)?;
+
+            let result = Package::apply_signature_in_place(&path, b"signature".to_vec());
+
+            assert!(
+                matches!(result, Err(Error::SignatureBackendRequired)),
+                "{src}: {result:?}"
+            );
+            assert_eq!(std::fs::read(&path)?, original, "{src}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_signature_keeps_existing_signatures() -> Result<(), Box<dyn std::error::Error>> {
+        for src in SIGNED {
+            let mut package = Package::open(src)?;
+            let original = package.metadata.signature.clone();
+
+            let result = package.apply_signature(b"signature".to_vec());
+
+            assert!(
+                matches!(result, Err(Error::SignatureBackendRequired)),
+                "{src}: {result:?}"
+            );
+            assert_eq!(package.metadata.signature, original, "{src}");
+        }
+        // An unsigned package must not be reported as signed either.
+        let mut package = Package::open(common::pkgs::v4::RPM_BASIC)?;
+        assert!(matches!(
+            package.apply_signature(b"signature".to_vec()),
+            Err(Error::SignatureBackendRequired)
+        ));
+        Ok(())
+    }
+
+    #[cfg(all(feature = "payload", feature = "gzip-compression"))]
+    #[test]
+    fn test_decompress_payload_keeps_existing_signatures() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut package = Package::open(common::pkgs::v6::compressed::RPM_BASIC_GZIP)?;
+        package.metadata.signature = Package::open(common::pkgs::v6::RPM_BASIC_RSA_SIGNED)?
+            .metadata
+            .signature;
+        let original = package.clone();
+
+        let result = package.decompress_payload();
+
+        assert!(
+            matches!(result, Err(Error::SignatureBackendRequired)),
+            "{result:?}"
+        );
+        assert_eq!(package.metadata.signature, original.metadata.signature);
+        assert_eq!(package.payload, original.payload);
+        Ok(())
+    }
+}
+
+/// Read every piece of header metadata that the accessors expose, ignoring the results.
+/// Malformed input may make any of them fail, but none of them may panic.
+fn read_all_metadata(metadata: &PackageMetadata) {
+    let _ = (
+        metadata.get_name(),
+        metadata.get_epoch(),
+        metadata.get_version(),
+    );
+    let _ = (
+        metadata.get_release(),
+        metadata.get_arch(),
+        metadata.get_vendor(),
+    );
+    let _ = (
+        metadata.get_url(),
+        metadata.get_vcs(),
+        metadata.get_license(),
+    );
+    let _ = (
+        metadata.get_summary(),
+        metadata.get_description(),
+        metadata.get_group(),
+    );
+    let _ = (
+        metadata.get_packager(),
+        metadata.get_build_time(),
+        metadata.get_build_host(),
+    );
+    let _ = (
+        metadata.get_cookie(),
+        metadata.get_source_rpm(),
+        metadata.is_source_package(),
+    );
+    let _ = (
+        metadata.get_pre_install_script(),
+        metadata.get_post_install_script(),
+    );
+    let _ = (
+        metadata.get_pre_uninstall_script(),
+        metadata.get_post_uninstall_script(),
+    );
+    let _ = (
+        metadata.get_pre_trans_script(),
+        metadata.get_post_trans_script(),
+    );
+    let _ = (
+        metadata.get_pre_untrans_script(),
+        metadata.get_post_untrans_script(),
+    );
+    let _ = (metadata.get_verify_script(), metadata.get_triggers());
+    let _ = (
+        metadata.get_file_triggers(),
+        metadata.get_trans_file_triggers(),
+    );
+    let _ = (
+        metadata.get_provides(),
+        metadata.get_requires(),
+        metadata.get_conflicts(),
+    );
+    let _ = (
+        metadata.get_obsoletes(),
+        metadata.get_recommends(),
+        metadata.get_suggests(),
+    );
+    let _ = (metadata.get_enhances(), metadata.get_supplements());
+    let _ = (
+        metadata.get_installed_size(),
+        metadata.get_payload_compressor(),
+    );
+    let _ = (
+        metadata.get_file_paths(),
+        metadata.get_file_digest_algorithm(),
+    );
+    let _ = (
+        metadata.get_file_entries(),
+        metadata.get_changelog_entries(),
+    );
+    let _ = (
+        metadata.signature.get_all_entries(),
+        metadata.header.get_all_entries(),
+    );
+    #[cfg(feature = "signature-meta")]
+    let _ = metadata.signatures();
+}
+
+/// Truncated or corrupted headers must produce errors, never panics.
+/// Covers every truncation point and three values for every byte of the lead and both headers.
+#[test]
+fn test_malformed_headers_do_not_panic() -> Result<(), Box<dyn std::error::Error>> {
+    for path in [
+        common::pkgs::v4::RPM_BASIC_RSA_SIGNED,
+        common::pkgs::v6::RPM_SCRIPTLETS,
+    ] {
+        let bytes = std::fs::read(path)?;
+        let metadata = PackageMetadata::parse(&mut std::io::Cursor::new(&bytes[..]))?;
+        let headers_end = metadata.get_package_segment_offsets().payload as usize;
+        let check = |input: &[u8], what: &dyn std::fmt::Display| {
+            let result = std::panic::catch_unwind(|| {
+                if let Ok(metadata) = PackageMetadata::parse(&mut std::io::Cursor::new(input)) {
+                    read_all_metadata(&metadata);
+                }
+            });
+            assert!(result.is_ok(), "{path}: {what}");
+        };
+        for cut in 0..headers_end {
+            check(&bytes[..cut], &format_args!("truncated at {cut}"));
+        }
+        let mut corrupt = bytes[..headers_end].to_vec();
+        for pos in 0..headers_end {
+            for value in [0x00, 0xff, bytes[pos] ^ 0x80] {
+                corrupt[pos] = value;
+                check(&corrupt, &format_args!("byte {pos} set to {value:#04x}"));
+            }
+            corrupt[pos] = bytes[pos];
+        }
+    }
     Ok(())
 }
