@@ -1473,3 +1473,122 @@ mod without_signature_backend {
         Ok(())
     }
 }
+
+/// Read every piece of header metadata that the accessors expose, ignoring the results.
+/// Malformed input may make any of them fail, but none of them may panic.
+fn read_all_metadata(metadata: &PackageMetadata) {
+    let _ = (
+        metadata.get_name(),
+        metadata.get_epoch(),
+        metadata.get_version(),
+    );
+    let _ = (
+        metadata.get_release(),
+        metadata.get_arch(),
+        metadata.get_vendor(),
+    );
+    let _ = (
+        metadata.get_url(),
+        metadata.get_vcs(),
+        metadata.get_license(),
+    );
+    let _ = (
+        metadata.get_summary(),
+        metadata.get_description(),
+        metadata.get_group(),
+    );
+    let _ = (
+        metadata.get_packager(),
+        metadata.get_build_time(),
+        metadata.get_build_host(),
+    );
+    let _ = (
+        metadata.get_cookie(),
+        metadata.get_source_rpm(),
+        metadata.is_source_package(),
+    );
+    let _ = (
+        metadata.get_pre_install_script(),
+        metadata.get_post_install_script(),
+    );
+    let _ = (
+        metadata.get_pre_uninstall_script(),
+        metadata.get_post_uninstall_script(),
+    );
+    let _ = (
+        metadata.get_pre_trans_script(),
+        metadata.get_post_trans_script(),
+    );
+    let _ = (
+        metadata.get_pre_untrans_script(),
+        metadata.get_post_untrans_script(),
+    );
+    let _ = (metadata.get_verify_script(), metadata.get_triggers());
+    let _ = (
+        metadata.get_file_triggers(),
+        metadata.get_trans_file_triggers(),
+    );
+    let _ = (
+        metadata.get_provides(),
+        metadata.get_requires(),
+        metadata.get_conflicts(),
+    );
+    let _ = (
+        metadata.get_obsoletes(),
+        metadata.get_recommends(),
+        metadata.get_suggests(),
+    );
+    let _ = (metadata.get_enhances(), metadata.get_supplements());
+    let _ = (
+        metadata.get_installed_size(),
+        metadata.get_payload_compressor(),
+    );
+    let _ = (
+        metadata.get_file_paths(),
+        metadata.get_file_digest_algorithm(),
+    );
+    let _ = (
+        metadata.get_file_entries(),
+        metadata.get_changelog_entries(),
+    );
+    let _ = (
+        metadata.signature.get_all_entries(),
+        metadata.header.get_all_entries(),
+    );
+    #[cfg(feature = "signature-meta")]
+    let _ = metadata.signatures();
+}
+
+/// Truncated or corrupted headers must produce errors, never panics.
+/// Covers every truncation point and three values for every byte of the lead and both headers.
+#[test]
+fn test_malformed_headers_do_not_panic() -> Result<(), Box<dyn std::error::Error>> {
+    for path in [
+        common::pkgs::v4::RPM_BASIC_RSA_SIGNED,
+        common::pkgs::v6::RPM_SCRIPTLETS,
+    ] {
+        let bytes = std::fs::read(path)?;
+        let metadata = PackageMetadata::parse(&mut std::io::Cursor::new(&bytes[..]))?;
+        let headers_end = metadata.get_package_segment_offsets().payload as usize;
+        let check = |input: &[u8], what: &dyn std::fmt::Display| {
+            let result = std::panic::catch_unwind(|| {
+                if let Ok(metadata) = PackageMetadata::parse(&mut std::io::Cursor::new(input)) {
+                    read_all_metadata(&metadata);
+                }
+            });
+            assert!(result.is_ok(), "{path}: {what}");
+        };
+        for cut in 0..headers_end {
+            check(&bytes[..cut], &format_args!("truncated at {cut}"));
+        }
+        let mut corrupt = bytes[..headers_end].to_vec();
+        for pos in 0..headers_end {
+            for value in [0x00, 0xff, bytes[pos] ^ 0x80] {
+                corrupt[pos] = value;
+                check(&corrupt, &format_args!("byte {pos} set to {value:#04x}"));
+            }
+            corrupt[pos] = bytes[pos];
+        }
+    }
+    Ok(())
+}
