@@ -1172,6 +1172,49 @@ fn test_scriptlets_package() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Rewrite the item count of one main-header index entry in raw package bytes.
+fn set_main_header_entry_count(bytes: &mut [u8], tag: IndexTag, count: u32) {
+    let metadata = PackageMetadata::parse(&mut std::io::Cursor::new(&*bytes)).unwrap();
+    let header = metadata.get_package_segment_offsets().header as usize;
+    let word = |bytes: &[u8], at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+    let num_entries = word(bytes, header + 8) as usize;
+    let entry = (0..num_entries)
+        .map(|i| header + 16 + i * 16)
+        .find(|&entry| word(bytes, entry) == tag as u32)
+        .expect("fixture has the tag");
+    bytes[entry + 12..entry + 16].copy_from_slice(&count.to_be_bytes());
+}
+
+/// A trigger header whose parallel arrays disagree must be rejected, not index out of bounds.
+#[test]
+fn test_triggers_with_inconsistent_arrays() -> Result<(), Box<dyn std::error::Error>> {
+    let original = std::fs::read(common::pkgs::v6::RPM_SCRIPTLETS)?;
+    type Getter = fn(&PackageMetadata) -> Result<Vec<Trigger>, Error>;
+    let cases: [(IndexTag, Getter); 3] = [
+        (
+            IndexTag::RPMTAG_TRIGGERSCRIPTPROG,
+            PackageMetadata::get_triggers,
+        ),
+        (
+            IndexTag::RPMTAG_FILETRIGGERSCRIPTPROG,
+            PackageMetadata::get_file_triggers,
+        ),
+        (IndexTag::RPMTAG_TRIGGERINDEX, PackageMetadata::get_triggers),
+    ];
+    for (tag, get) in cases {
+        for count in [0, 1] {
+            let mut bytes = original.clone();
+            set_main_header_entry_count(&mut bytes, tag, count);
+            let metadata = PackageMetadata::parse(&mut std::io::Cursor::new(&bytes[..]))?;
+            assert!(
+                matches!(get(&metadata), Err(Error::InconsistentTagArrayLengths)),
+                "{tag:?} with count {count}"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Parse the rpm-rich-deps fixture and verify rich (boolean) dependencies
 /// are correctly read across all dependency types.
 #[test]

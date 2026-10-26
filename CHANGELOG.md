@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject extraction paths that escape the destination through traversal or symbolic links.
 - Reject oversized headers and entries that reference data outside their header store.
 - Preserve empty symlink targets instead of treating them as absent metadata.
+- Trigger accessors return `InconsistentTagArrayLengths` instead of panicking when trigger tag arrays disagree in length.
 
 ## 0.30.2
 

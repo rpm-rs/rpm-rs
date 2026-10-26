@@ -1201,6 +1201,16 @@ impl PackageMetadata {
         let cond_flags = self.header.get_entry_data_as_u32_array(cond_flags_tag)?;
         let indices = self.header.get_entry_data_as_u32_array(index_tag)?;
 
+        // Each script has one program, and each condition has a name, version, flags and
+        // script index. Arrays of different lengths come from a malformed header.
+        if progs.len() != scripts.len()
+            || versions.len() != names.len()
+            || cond_flags.len() != names.len()
+            || indices.len() != names.len()
+        {
+            return Err(Error::InconsistentTagArrayLengths);
+        }
+
         // Build triggers: group conditions by their script index
         let num_scripts = scripts.len();
         let mut triggers: Vec<Trigger> = scripts
