@@ -1396,3 +1396,80 @@ fn test_find_file_entry() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+/// Without a signature backend, OpenPGP signatures cannot be written. Operations that would
+/// rewrite the signature header must fail instead of silently dropping signatures.
+#[cfg(not(feature = "signature-meta"))]
+mod without_signature_backend {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    const SIGNED: [&str; 2] = [
+        common::pkgs::v4::RPM_BASIC_RSA_SIGNED,
+        common::pkgs::v6::RPM_BASIC_RSA_SIGNED,
+    ];
+
+    #[test]
+    fn test_apply_signature_in_place_leaves_file_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        for src in SIGNED {
+            let path = dir.path().join("package.rpm");
+            std::fs::copy(src, &path)?;
+            let original = std::fs::read(&path)?;
+
+            let result = Package::apply_signature_in_place(&path, b"signature".to_vec());
+
+            assert!(
+                matches!(result, Err(Error::SignatureBackendRequired)),
+                "{src}: {result:?}"
+            );
+            assert_eq!(std::fs::read(&path)?, original, "{src}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_signature_keeps_existing_signatures() -> Result<(), Box<dyn std::error::Error>> {
+        for src in SIGNED {
+            let mut package = Package::open(src)?;
+            let original = package.metadata.signature.clone();
+
+            let result = package.apply_signature(b"signature".to_vec());
+
+            assert!(
+                matches!(result, Err(Error::SignatureBackendRequired)),
+                "{src}: {result:?}"
+            );
+            assert_eq!(package.metadata.signature, original, "{src}");
+        }
+        // An unsigned package must not be reported as signed either.
+        let mut package = Package::open(common::pkgs::v4::RPM_BASIC)?;
+        assert!(matches!(
+            package.apply_signature(b"signature".to_vec()),
+            Err(Error::SignatureBackendRequired)
+        ));
+        Ok(())
+    }
+
+    #[cfg(all(feature = "payload", feature = "gzip-compression"))]
+    #[test]
+    fn test_decompress_payload_keeps_existing_signatures() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut package = Package::open(common::pkgs::v6::compressed::RPM_BASIC_GZIP)?;
+        package.metadata.signature = Package::open(common::pkgs::v6::RPM_BASIC_RSA_SIGNED)?
+            .metadata
+            .signature;
+        let original = package.clone();
+
+        let result = package.decompress_payload();
+
+        assert!(
+            matches!(result, Err(Error::SignatureBackendRequired)),
+            "{result:?}"
+        );
+        assert_eq!(package.metadata.signature, original.metadata.signature);
+        assert_eq!(package.payload, original.payload);
+        Ok(())
+    }
+}

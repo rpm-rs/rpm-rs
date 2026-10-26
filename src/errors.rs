@@ -133,6 +133,11 @@ pub enum Error {
     #[error("signature packet found, but no version was specified")]
     UnknownVersionSignature,
 
+    #[error(
+        "writing OpenPGP signatures requires a signature backend; enable the `signature-pgp` or `signature-sequoia` feature"
+    )]
+    SignatureBackendRequired,
+
     #[cfg(any(feature = "signature-pgp", feature = "signature-sequoia"))]
     #[error("error creating signature: {0}")]
     SignError(#[source] Box<dyn std::error::Error + Send + Sync>),

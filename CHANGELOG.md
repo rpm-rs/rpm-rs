@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject oversized headers and entries that reference data outside their header store.
 - Preserve empty symlink targets instead of treating them as absent metadata.
 - Trigger accessors return `InconsistentTagArrayLengths` instead of panicking when trigger tag arrays disagree in length.
+- Without a signature backend, `apply_signature`, `apply_signature_in_place` and `decompress_payload` no longer silently drop OpenPGP signatures; they return the new `Error::SignatureBackendRequired` and leave the package or file unchanged.
 
 ## 0.30.2
 
