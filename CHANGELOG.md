@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Trigger accessors return `InconsistentTagArrayLengths` instead of panicking when trigger tag arrays disagree in length.
 - Without a signature backend, `apply_signature`, `apply_signature_in_place` and `decompress_payload` no longer silently drop OpenPGP signatures; they return the new `Error::SignatureBackendRequired` and leave the package or file unchanged.
 - The signature header is held to librpm's tighter limits (32 entries, 64 MiB of data) instead of the main-header limits.
+- Headers are read in chunks of at most 1 MiB, so a short input that declares a large header no longer allocates the full declared size first.
 
 ## 0.30.2
 

@@ -107,11 +107,7 @@ where
         let index_header = IndexHeader::parse(&buf)?;
         // read rest of header (index + data portions)
         let size_rest = index_header.checked_size(limits)?;
-        let mut buf = Vec::new();
-        buf.try_reserve_exact(size_rest)
-            .map_err(|_| Error::HeaderAllocationFailed { size: size_rest })?;
-        buf.resize(size_rest, 0);
-        input.read_exact(&mut buf)?;
+        let buf = read_header_bytes(input, size_rest)?;
         Self::parse_header(index_header, &buf[..])
     }
 
@@ -948,6 +944,26 @@ fn parse_binary_entry(
     Ok(())
 }
 
+/// Largest piece of a header that is read into memory at once.
+const HEADER_READ_CHUNK: usize = 1024 * 1024;
+
+/// Read the `size` bytes that follow a header's index header.
+///
+/// The buffer grows with the data actually read, so a short input that declares a large
+/// header fails at its end instead of first allocating the whole declared size.
+fn read_header_bytes(input: &mut impl io::Read, size: usize) -> Result<Vec<u8>, Error> {
+    let mut buf = Vec::new();
+    while buf.len() < size {
+        let start = buf.len();
+        let chunk = (size - start).min(HEADER_READ_CHUNK);
+        buf.try_reserve(chunk)
+            .map_err(|_| Error::HeaderAllocationFailed { size })?;
+        buf.resize(start + chunk, 0);
+        input.read_exact(&mut buf[start..])?;
+    }
+    Ok(buf)
+}
+
 fn reserve_entry_items<T>(items: &mut Vec<T>, item_count: u32) -> Result<(), Error> {
     let item_count = item_count as usize;
     items
@@ -1571,6 +1587,40 @@ mod test {
 
         let err = Header::<IndexTag>::parse(&mut io::Cursor::new(&bytes)).unwrap_err();
         assert!(matches!(err, Error::Io(_)), "{err:?}");
+    }
+
+    /// A reader that records the largest buffer it is asked to fill.
+    struct RecordingReader<'a> {
+        data: &'a [u8],
+        largest_request: usize,
+    }
+
+    impl io::Read for RecordingReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.largest_request = self.largest_request.max(buf.len());
+            io::Read::read(&mut self.data, buf)
+        }
+    }
+
+    #[test]
+    /// A short input that declares a large header must fail at the end of its data, without
+    /// first allocating (and handing the reader) a buffer of the declared size.
+    fn short_input_does_not_allocate_declared_header_size() {
+        let mut bytes = index_header_bytes(1, 16 * HEADER_READ_CHUNK as u32);
+        bytes.extend_from_slice(&[0; 64]);
+        let mut reader = RecordingReader {
+            data: &bytes,
+            largest_request: 0,
+        };
+
+        let err = Header::<IndexTag>::parse(&mut io::BufReader::new(&mut reader)).unwrap_err();
+
+        assert!(matches!(err, Error::Io(_)), "{err:?}");
+        assert!(
+            reader.largest_request <= HEADER_READ_CHUNK,
+            "asked the reader to fill {} bytes",
+            reader.largest_request
+        );
     }
 
     #[test]
