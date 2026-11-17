@@ -71,6 +71,8 @@ mod pgp {
         label: &'static str,
         /// If set, only run on distros supporting this algorithm/format.
         required: Option<(Algorithm, RpmFormat)>,
+        /// Whether `rpm --checksig` must verify an OpenPGP signature.
+        verify_signature: bool,
         /// Override the default `/out/{label}.rpm` container path.
         /// If set, this should be a host-side path under `tests/assets/`; it will be
         /// converted to its container-side equivalent (`/assets/...`) automatically.
@@ -120,11 +122,16 @@ mod pgp {
                 } else {
                     format!("dnf ${{REPOS}} install -y {path}")
                 };
+                let signature_option = if pkg.verify_signature {
+                    ""
+                } else {
+                    "--nosignature "
+                };
                 cmd.push_str(&format!(
                     r#"
 echo ">>>>>>>>>> {label} <<<<<<<<<<"
 {install_cmd}
-rpm -vv --checksig {path} 2>&1
+rpm -vv --checksig {signature_option}{path} 2>&1
 echo ">>>>>>>>>> {label}: OK <<<<<<<<<<"
 "#,
                     label = pkg.label,
@@ -206,37 +213,44 @@ echo ">>>>>>>>>> {label}: OK <<<<<<<<<<"
                 TestPackage {
                     label: "fixture_v4_rsa",
                     required: Some((Algorithm::Rsa, RpmFormat::V4)),
+                    verify_signature: true,
                     asset_path: Some(common::pkgs::v4::RPM_BASIC_RSA_SIGNED),
                 },
                 TestPackage {
                     label: "fixture_v4_ecdsa",
                     required: Some((Algorithm::Ecdsa, RpmFormat::V4)),
+                    verify_signature: true,
                     asset_path: Some(common::pkgs::v4::RPM_BASIC_ECDSA_SIGNED),
                 },
                 TestPackage {
                     label: "fixture_v4_eddsa",
                     required: Some((Algorithm::Eddsa, RpmFormat::V4)),
+                    verify_signature: true,
                     asset_path: Some(common::pkgs::v4::RPM_BASIC_EDDSA_SIGNED),
                 },
                 // v6 signed
                 TestPackage {
                     label: "fixture_v6_rsa",
                     required: Some((Algorithm::Rsa, RpmFormat::V6)),
+                    verify_signature: true,
                     asset_path: Some(common::pkgs::v6::RPM_BASIC_RSA_SIGNED),
                 },
                 TestPackage {
                     label: "fixture_v6_eddsa",
                     required: Some((Algorithm::Eddsa, RpmFormat::V6)),
+                    verify_signature: true,
                     asset_path: Some(common::pkgs::v6::RPM_BASIC_EDDSA_SIGNED),
                 },
                 TestPackage {
                     label: "fixture_v6_mldsa",
                     required: Some((Algorithm::Mldsa, RpmFormat::V6)),
+                    verify_signature: true,
                     asset_path: Some(common::pkgs::v6::RPM_BASIC_MLDSA_SIGNED),
                 },
                 TestPackage {
                     label: "fixture_v6_multi_signed",
                     required: Some((Algorithm::Eddsa, RpmFormat::V6)),
+                    verify_signature: true,
                     asset_path: Some(common::pkgs::v6::RPM_BASIC_MULTI_SIGNED),
                 },
             ],
@@ -390,85 +404,101 @@ echo ">>>>>>>>>> {label}: OK <<<<<<<<<<"
                 TestPackage {
                     label: EMPTY_V4_UNSIGNED,
                     required: None,
+                    verify_signature: false,
                     asset_path: None,
                 },
                 TestPackage {
                     label: EMPTY_V6_UNSIGNED,
                     required: Some((Algorithm::Rsa, RpmFormat::V6)),
+                    verify_signature: false,
                     asset_path: None,
                 },
                 // Empty signed
                 TestPackage {
                     label: EMPTY_V4_SIGNED_RSA,
                     required: Some((Algorithm::Rsa, RpmFormat::V4)),
+                    verify_signature: true,
                     asset_path: None,
                 },
                 TestPackage {
                     label: EMPTY_V6_SIGNED_RSA,
                     required: Some((Algorithm::Rsa, RpmFormat::V6)),
+                    verify_signature: true,
                     asset_path: None,
                 },
                 TestPackage {
                     label: EMPTY_V6_SIGNED_EDDSA,
                     required: Some((Algorithm::Eddsa, RpmFormat::V6)),
+                    verify_signature: true,
                     asset_path: None,
                 },
                 // Full unsigned
                 TestPackage {
                     label: FULL_V4_UNSIGNED,
                     required: None,
+                    verify_signature: false,
                     asset_path: None,
                 },
                 TestPackage {
                     label: FULL_V6_UNSIGNED,
                     required: Some((Algorithm::Rsa, RpmFormat::V6)),
+                    verify_signature: false,
                     asset_path: None,
                 },
                 // Full signed
                 TestPackage {
                     label: FULL_V4_SIGNED_RSA,
                     required: Some((Algorithm::Rsa, RpmFormat::V4)),
+                    verify_signature: true,
                     asset_path: None,
                 },
                 TestPackage {
                     label: FULL_V6_SIGNED_RSA,
                     required: Some((Algorithm::Rsa, RpmFormat::V6)),
+                    verify_signature: true,
                     asset_path: None,
                 },
                 TestPackage {
                     label: FULL_V6_SIGNED_EDDSA,
                     required: Some((Algorithm::Eddsa, RpmFormat::V6)),
+                    verify_signature: true,
                     asset_path: None,
                 },
                 TestPackage {
                     label: FULL_V6_MULTI_SIGNED,
                     required: Some((Algorithm::Eddsa, RpmFormat::V6)),
+                    verify_signature: true,
                     asset_path: None,
                 },
                 // Compression variants
                 TestPackage {
                     label: FULL_V4_ZSTD,
                     required: None,
+                    verify_signature: false,
                     asset_path: None,
                 },
                 TestPackage {
                     label: FULL_V6_GZIP,
                     required: Some((Algorithm::Rsa, RpmFormat::V6)),
+                    verify_signature: false,
                     asset_path: None,
                 },
                 TestPackage {
                     label: FULL_V6_ZSTD,
                     required: Some((Algorithm::Rsa, RpmFormat::V6)),
+                    verify_signature: false,
                     asset_path: None,
                 },
                 TestPackage {
                     label: FULL_V6_XZ,
                     required: Some((Algorithm::Rsa, RpmFormat::V6)),
+                    verify_signature: false,
                     asset_path: None,
                 },
                 TestPackage {
                     label: FULL_V6_UNCOMPRESSED,
                     required: Some((Algorithm::Rsa, RpmFormat::V6)),
+                    verify_signature: false,
                     asset_path: None,
                 },
             ],
