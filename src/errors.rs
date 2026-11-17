@@ -1,8 +1,29 @@
-use std::{io, str::Utf8Error};
+use std::{fmt, io, str::Utf8Error};
 
 use thiserror::Error;
 
 use crate::{DigestAlgorithm, TimestampError, constants::format_tag_id};
+
+/// The source of a file size being compared while reading an RPM.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSizeSource {
+    /// File size from the RPM header metadata.
+    RpmMetadata,
+    /// Byte length of the symbolic link target in the RPM header.
+    SymlinkTarget,
+    /// File size encoded by a standard CPIO payload record.
+    CpioArchive,
+}
+
+impl fmt::Display for FileSizeSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RpmMetadata => f.write_str("RPM metadata"),
+            Self::SymlinkTarget => f.write_str("symlink target"),
+            Self::CpioArchive => f.write_str("CPIO archive"),
+        }
+    }
+}
 
 #[derive(Error, Debug)]
 #[non_exhaustive]
@@ -47,8 +68,52 @@ pub enum Error {
     #[error("invalid tag array index {tag} with {index} while bounded at {bound}")]
     InvalidTagIndex { tag: String, index: u32, bound: u32 },
 
+    #[error("header {section} size {size} exceeds the {limit}-byte limit")]
+    HeaderSizeLimitExceeded {
+        section: &'static str,
+        size: usize,
+        limit: usize,
+    },
+
+    #[error("header index contains {count} entries, exceeding the {limit}-entry limit")]
+    HeaderEntryCountLimitExceeded { count: u32, limit: u32 },
+
+    #[error("header entry {tag} has {count} items, exceeding the {limit}-item limit")]
+    HeaderArrayItemCountLimitExceeded { tag: u32, count: u32, limit: u32 },
+
+    #[error("unable to allocate {size} bytes while reading an RPM header")]
+    HeaderAllocationFailed { size: usize },
+
+    #[error("header entry {tag} has invalid data offset {offset} for a {store_size}-byte store")]
+    HeaderEntryOffsetOutOfBounds {
+        tag: u32,
+        offset: i32,
+        store_size: usize,
+    },
+
+    #[error(
+        "header entry {tag} at offset {offset} needs {size} bytes, exceeding its {store_size}-byte store"
+    )]
+    HeaderEntryDataOutOfBounds {
+        tag: u32,
+        offset: i32,
+        size: usize,
+        store_size: usize,
+    },
+
     #[error("related tag arrays have inconsistent lengths")]
     InconsistentTagArrayLengths,
+
+    #[error(
+        "file size mismatch for entry {index}: {left} is {left_size} bytes, but {right} is {right_size} bytes"
+    )]
+    FileSizeMismatch {
+        index: usize,
+        left: FileSizeSource,
+        left_size: u64,
+        right: FileSizeSource,
+        right_size: u64,
+    },
 
     #[error("invalid tag value enum variant for {tag} with {variant}")]
     InvalidTagValueEnumVariant { tag: String, variant: u32 },
@@ -67,6 +132,11 @@ pub enum Error {
 
     #[error("signature packet found, but no version was specified")]
     UnknownVersionSignature,
+
+    #[error(
+        "writing OpenPGP signatures requires a signature backend; enable the `signature-pgp` or `signature-sequoia` feature"
+    )]
+    SignatureBackendRequired,
 
     #[cfg(any(feature = "signature-pgp", feature = "signature-sequoia"))]
     #[error("error creating signature: {0}")]

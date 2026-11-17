@@ -148,11 +148,11 @@ pub struct Writer<W: Write> {
 /// Compute NUL padding bytes needed to align `len` to a 4-byte boundary.
 ///
 /// Returns `None` if `len` is already aligned.
-fn align_to_4(len: usize) -> Option<Vec<u8>> {
+fn align_to_4(len: u64) -> Option<Vec<u8>> {
     let overhang = len % 4;
     if overhang != 0 {
         let repeat = 4 - overhang;
-        Some(vec![0u8; repeat])
+        Some(vec![0u8; repeat as usize])
     } else {
         None
     }
@@ -312,6 +312,16 @@ impl<R: Read> Reader<R> {
         }
     }
 
+    /// Return the size encoded by a standard CPIO entry.
+    ///
+    /// Stripped CPIO entries omit this field and use RPM header metadata instead.
+    pub(crate) fn cpio_file_size(&self) -> Option<u64> {
+        match &self.entry {
+            RpmPayloadEntry::Cpio(entry) if !entry.is_trailer() => Some(entry.file_size() as u64),
+            RpmPayloadEntry::Cpio(_) | RpmPayloadEntry::Stripped(_) => None,
+        }
+    }
+
     /// Parses metadata for the next entry in an archive, and returns a reader
     /// that will yield the entry data.
     ///
@@ -388,7 +398,7 @@ impl<R: Read> Reader<R> {
                 })?;
 
                 // Pad out to a multiple of 4 bytes.
-                if let Some(mut padding) = align_to_4(HEADER_LEN + name_len) {
+                if let Some(mut padding) = align_to_4((HEADER_LEN + name_len) as u64) {
                     inner.read_exact(&mut padding)?;
                 }
                 let entry = CpioEntry {
@@ -414,7 +424,7 @@ impl<R: Read> Reader<R> {
                 let file_index = read_hex_u32(&mut inner)?;
 
                 // The stripped header is 14 bytes (6 magic + 8 index), padded to 16.
-                if let Some(mut padding) = align_to_4(STRIPPED_CPIO_HEADER_LEN) {
+                if let Some(mut padding) = align_to_4(STRIPPED_CPIO_HEADER_LEN as u64) {
                     inner.read_exact(&mut padding)?;
                 }
 
@@ -434,7 +444,7 @@ impl<R: Read> Reader<R> {
                 let idx = idx as usize;
                 payload_sizes
                     .and_then(|sizes| sizes.get(idx).copied())
-                    .or_else(|| file_entries.get(idx).map(|e| e.size as u64))
+                    .or_else(|| file_entries.get(idx).map(|e| e.size))
                     .ok_or_else(|| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -473,7 +483,7 @@ impl<R: Read> Reader<R> {
         if remaining > 0 {
             io::copy(&mut self.inner.by_ref().take(remaining), &mut io::sink())?;
         }
-        if let Some(mut padding) = align_to_4(self.file_size as usize) {
+        if let Some(mut padding) = align_to_4(self.file_size) {
             self.inner.read_exact(&mut padding)?;
         }
         Ok(self.inner)
@@ -483,7 +493,8 @@ impl<R: Read> Reader<R> {
 impl<R: Read> Read for Reader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let remaining = self.file_size - self.bytes_read;
-        let limit = buf.len().min(remaining as usize);
+        let limit =
+            usize::try_from(remaining).map_or(buf.len(), |remaining| buf.len().min(remaining));
         if limit > 0 {
             let num_bytes = self.inner.read(&mut buf[..limit])?;
             self.bytes_read += num_bytes as u64;
@@ -666,7 +677,7 @@ impl Builder {
         header.push(0u8);
 
         // pad out to a multiple of 4 bytes
-        if let Some(pad) = align_to_4(HEADER_LEN + name_len) {
+        if let Some(pad) = align_to_4((HEADER_LEN + name_len) as u64) {
             header.extend(pad);
         }
 
@@ -690,7 +701,7 @@ pub fn write_stripped_cpio<W: Write>(w: W, file_index: u32, file_size: u64) -> W
     header.extend(format!("{:08x}", file_index).as_bytes());
 
     // pad out to a multiple of 4 bytes (14 + 2)
-    if let Some(pad) = align_to_4(STRIPPED_CPIO_HEADER_LEN) {
+    if let Some(pad) = align_to_4(STRIPPED_CPIO_HEADER_LEN as u64) {
         header.extend(pad);
     }
 
@@ -733,7 +744,15 @@ impl<W: Write> Writer<W> {
         // Pad file data to a 4-byte boundary. The padding is based on the combined
         // header+name+data length because header+name is already padded to 4 bytes,
         // and data starts at that boundary.
-        if let Some(pad) = align_to_4(self.header_size + self.file_size as usize) {
+        let unpadded_entry_size = (self.header_size as u64)
+            .checked_add(self.file_size)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "CPIO entry size overflows 64-bit alignment calculation",
+                )
+            })?;
+        if let Some(pad) = align_to_4(unpadded_entry_size) {
             self.inner.write_all(&pad)?;
         }
         self.inner.flush()?;
@@ -979,7 +998,7 @@ mod stripped_cpio_tests {
     use std::borrow::Cow;
     use std::io::{Cursor, copy};
 
-    fn make_file_entry(path: &str, size: usize) -> super::super::FileEntry<'static> {
+    fn make_file_entry(path: &str, size: u64) -> super::super::FileEntry<'static> {
         super::super::FileEntry {
             dirname: Cow::Owned(String::new()),
             basename: Cow::Owned(path.to_owned()),
@@ -1026,8 +1045,8 @@ mod stripped_cpio_tests {
         let len2 = data2.len() as u64;
 
         let file_entries = vec![
-            make_file_entry("file1", len1 as usize),
-            make_file_entry("file2", len2 as usize),
+            make_file_entry("file1", len1),
+            make_file_entry("file2", len2),
         ];
 
         // Write two stripped entries
@@ -1076,7 +1095,7 @@ mod stripped_cpio_tests {
         let file_entries: Vec<_> = sizes
             .iter()
             .enumerate()
-            .map(|(i, &size)| make_file_entry(&format!("file{}", i), size))
+            .map(|(i, &size)| make_file_entry(&format!("file{}", i), size as u64))
             .collect();
 
         let mut out = vec![];

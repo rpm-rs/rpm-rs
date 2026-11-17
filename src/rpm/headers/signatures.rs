@@ -152,8 +152,19 @@ impl SignatureHeaderBuilder {
     }
 
     /// Construct the complete signature header.
+    ///
+    /// Returns [`Error::SignatureBackendRequired`](crate::Error::SignatureBackendRequired) if the
+    /// builder holds OpenPGP signatures (added or preserved by [`from_existing`](Self::from_existing))
+    /// but the crate was built without a signature backend.
     pub fn build(self) -> Result<Header<IndexSignatureTag>, crate::Error> {
         let mut entries = Vec::new();
+
+        // Without a backend the signatures cannot be parsed to choose their tags. Leaving them
+        // out would return a header that silently lost every signature.
+        #[cfg(not(feature = "signature-meta"))]
+        if !self.openpgp_signatures.is_empty() {
+            return Err(crate::Error::SignatureBackendRequired);
+        }
 
         #[cfg(feature = "signature-meta")]
         if !self.openpgp_signatures.is_empty() {

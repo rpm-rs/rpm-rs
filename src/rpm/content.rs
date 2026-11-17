@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     fs, io,
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 #[cfg(unix)]
@@ -72,7 +72,7 @@ impl<'a> PayloadLayout<'a> {
 
         let mut payload_sizes = file_entries
             .iter()
-            .map(|entry| entry.size() as u64)
+            .map(|entry| entry.size())
             .collect::<Vec<_>>();
         let mut payload_presence = vec![true; file_entries.len()];
         for &index in &ghosts {
@@ -176,6 +176,179 @@ fn symlink(_original: &Path, _link: &Path) -> Result<(), Error> {
     Err(Error::UnsupportedSymlink)
 }
 
+/// Convert an RPM path into a path relative to the extraction root.
+fn extraction_relative_path(path: &Path) -> Result<PathBuf, Error> {
+    let relative = path.strip_prefix(Path::new("/")).unwrap_or(path);
+    let mut sanitized = PathBuf::new();
+
+    for component in relative.components() {
+        match component {
+            Component::Normal(component) => sanitized.push(component),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(Error::InvalidDestinationPath {
+                    path: path.display().to_string(),
+                    desc: "path contains a parent-directory component",
+                });
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(Error::InvalidDestinationPath {
+                    path: path.display().to_string(),
+                    desc: "path is not relative to the extraction root",
+                });
+            }
+        }
+    }
+
+    Ok(sanitized)
+}
+
+/// Create a directory below `root` without traversing symbolic links.
+fn ensure_safe_directory(root: &Path, relative: &Path) -> Result<PathBuf, Error> {
+    let mut directory = root.to_path_buf();
+
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            unreachable!("extraction paths are sanitized before directory creation");
+        };
+        directory.push(component);
+
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(Error::InvalidDestinationPath {
+                    path: directory.display().to_string(),
+                    desc: "path contains a symbolic link",
+                });
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(Error::InvalidDestinationPath {
+                    path: directory.display().to_string(),
+                    desc: "path contains a non-directory component",
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match fs::create_dir(&directory) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        let metadata = fs::symlink_metadata(&directory)?;
+                        if metadata.file_type().is_symlink() {
+                            return Err(Error::InvalidDestinationPath {
+                                path: directory.display().to_string(),
+                                desc: "path contains a symbolic link",
+                            });
+                        }
+                        if !metadata.is_dir() {
+                            return Err(Error::InvalidDestinationPath {
+                                path: directory.display().to_string(),
+                                desc: "path contains a non-directory component",
+                            });
+                        }
+                    }
+                    Err(error) => return Err(Error::Io(error)),
+                }
+            }
+            Err(error) => return Err(Error::Io(error)),
+        }
+    }
+
+    Ok(directory)
+}
+
+/// Resolve an RPM entry path and ensure its parent directory remains below `root`.
+fn extraction_path(root: &Path, path: &Path) -> Result<PathBuf, Error> {
+    let relative = extraction_relative_path(path)?;
+    if relative.as_os_str().is_empty() {
+        return Err(Error::InvalidDestinationPath {
+            path: path.display().to_string(),
+            desc: "path resolves to the extraction root",
+        });
+    }
+
+    let parent = relative
+        .parent()
+        .expect("non-empty relative path has a parent");
+    ensure_safe_directory(root, parent)?;
+    Ok(root.join(relative))
+}
+
+/// Reject a symbolic-link destination before an operation would follow it.
+fn reject_symlink_destination(path: &Path) -> Result<(), Error> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(Error::InvalidDestinationPath {
+            path: path.display().to_string(),
+            desc: "destination is a symbolic link",
+        }),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::Io(error)),
+    }
+}
+
+#[cfg(test)]
+mod extraction_path_tests {
+    use super::*;
+
+    #[test]
+    /// Reject package paths that would escape the extraction directory.
+    fn rejects_parent_directory_components() {
+        let err = extraction_relative_path(Path::new("/usr/../etc/passwd")).unwrap_err();
+
+        assert!(matches!(err, Error::InvalidDestinationPath { .. }));
+    }
+
+    #[test]
+    /// Reject traversal paths before an RPM entry can be written outside the destination.
+    fn extract_rejects_parent_directory_components() -> Result<(), Box<dyn std::error::Error>> {
+        let mut builder = crate::PackageBuilder::new("traversal", "1", "MIT", "noarch", "test");
+        builder.with_file_contents(b"payload", crate::FileOptions::new("/../escaped"))?;
+        let package = builder.build()?;
+        let temp_dir = tempfile::tempdir()?;
+        let destination = temp_dir.path().join("destination");
+
+        let err = package.extract(&destination).unwrap_err();
+
+        assert!(matches!(err, Error::InvalidDestinationPath { .. }));
+        assert!(!temp_dir.path().join("escaped").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    /// Refuse to create a child below a symlink that points outside the extraction root.
+    fn rejects_symlinked_directory_component() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let root = temp_dir.path().join("root");
+        let outside = temp_dir.path().join("outside");
+        fs::create_dir(&root)?;
+        fs::create_dir(&outside)?;
+        std::os::unix::fs::symlink(&outside, root.join("link"))?;
+
+        let err = ensure_safe_directory(&root, Path::new("link/child")).unwrap_err();
+
+        assert!(matches!(err, Error::InvalidDestinationPath { .. }));
+        assert!(!outside.join("child").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    /// Refuse to overwrite a symlink destination that could redirect a file write.
+    fn rejects_symlink_destination() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let target = temp_dir.path().join("target");
+        let link = temp_dir.path().join("link");
+        fs::write(&target, b"original")?;
+        std::os::unix::fs::symlink(&target, &link)?;
+
+        let err = reject_symlink_destination(&link).unwrap_err();
+
+        assert!(matches!(err, Error::InvalidDestinationPath { .. }));
+        assert_eq!(fs::read(target)?, b"original");
+        Ok(())
+    }
+}
+
 impl Package {
     /// Iterate over the file contents of the package payload.
     ///
@@ -240,10 +413,8 @@ impl Package {
 
         // pull every base directory name in the package and create the directory in advance
         for dir in &dirs {
-            let dir_path = dest
-                .as_ref()
-                .join(Path::new(dir).strip_prefix("/").unwrap_or(dest.as_ref()));
-            fs::create_dir_all(&dir_path)?;
+            let relative = extraction_relative_path(Path::new(dir))?;
+            ensure_safe_directory(dest.as_ref(), &relative)?;
         }
 
         let layout = PayloadLayout::new(&self.metadata, self.metadata.get_file_entries()?);
@@ -264,12 +435,11 @@ impl Package {
                 continue;
             }
             let entry_path = file_entry.path();
-            let file_path = dest
-                .as_ref()
-                .join(entry_path.strip_prefix("/").unwrap_or(dest.as_ref()));
+            let file_path = extraction_path(dest.as_ref(), &entry_path)?;
             match file_entry.file_type() {
                 FileType::Dir => {
-                    fs::create_dir_all(&file_path)?;
+                    let relative = extraction_relative_path(&entry_path)?;
+                    ensure_safe_directory(dest.as_ref(), &relative)?;
                     #[cfg(unix)]
                     {
                         let perms = fs::Permissions::from_mode(file_entry.permissions().into());
@@ -295,6 +465,7 @@ impl Package {
                     let content = file.content.as_deref().ok_or_else(|| {
                         Error::Io(io::Error::new(io::ErrorKind::InvalidData, missing_content))
                     })?;
+                    reject_symlink_destination(&file_path)?;
                     let mut f = fs::File::create(&file_path)?;
                     f.write_all(content)?;
                     #[cfg(unix)]
@@ -464,6 +635,14 @@ impl<'a> Iterator for FileIterator<'a> {
                     }));
                 }
 
+                if let Err(error) = validate_cpio_payload_size(
+                    &entry_reader,
+                    payload_index,
+                    self.payload_sizes[payload_index],
+                ) {
+                    return Some(Err(error));
+                }
+
                 let mut content = Vec::new();
                 if let Err(e) = entry_reader.read_to_end(&mut content) {
                     return Some(Err(Error::Io(e)));
@@ -531,6 +710,30 @@ fn cpio_path_matches(name: &str, entry: &FileEntry<'_>) -> bool {
     let entry_path = entry.path();
     let entry_path = entry_path.to_string_lossy();
     cpio_path == entry_path.strip_prefix('/').unwrap_or(&entry_path)
+}
+
+/// Validate a standard CPIO entry against the RPM payload layout.
+///
+/// Stripped CPIO has no encoded size, and legacy ghost entries remain exempt
+/// for compatibility.
+fn validate_cpio_payload_size<R: io::Read>(
+    reader: &payload::Reader<R>,
+    file_index: usize,
+    expected_size: u64,
+) -> Result<(), Error> {
+    if let Some(actual_size) = reader.cpio_file_size()
+        && actual_size != expected_size
+    {
+        return Err(Error::FileSizeMismatch {
+            index: file_index,
+            left: FileSizeSource::RpmMetadata,
+            left_size: expected_size,
+            right: FileSizeSource::CpioArchive,
+            right_size: actual_size,
+        });
+    }
+
+    Ok(())
 }
 
 impl ExactSizeIterator for FileIterator<'_> {
@@ -696,6 +899,7 @@ impl PackageReader {
                         payload_present: false,
                     }));
                 }
+                validate_cpio_payload_size(&reader, file_index, self.payload_sizes[file_index])?;
                 let payload_present = self.payload_presence[file_index];
                 self.seen[file_index] = true;
                 self.count += 1;
@@ -790,7 +994,7 @@ mod test_payload_layout {
     use std::borrow::Cow;
 
     /// Create a regular header entry with a controllable size and flags.
-    fn regular_entry(name: &'static str, size: usize, flags: FileFlags) -> FileEntry<'static> {
+    fn regular_entry(name: &'static str, size: u64, flags: FileFlags) -> FileEntry<'static> {
         FileEntry {
             dirname: Cow::Borrowed("/"),
             basename: Cow::Borrowed(name),
@@ -877,7 +1081,7 @@ mod test_payload_layout {
 /// they otherwise would make more sense as integration tests.
 #[cfg(test)]
 mod test_payload_integration {
-    use super::payload::{Builder as CpioBuilder, trailer};
+    use super::payload::{Builder as CpioBuilder, Reader as CpioReader, trailer};
     use crate::*;
     use pretty_assertions::assert_eq;
     use sha2::{Digest, Sha256};
@@ -886,6 +1090,29 @@ mod test_payload_integration {
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     use std::path::Path;
+
+    #[test]
+    /// Reject a standard CPIO entry whose encoded size conflicts with RPM metadata.
+    fn rejects_cpio_size_that_does_not_match_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let mut writer = CpioBuilder::new("./mismatch").write_cpio(Vec::new(), 3);
+        writer.write_all(b"abc")?;
+        let bytes = writer.finish()?;
+        let reader = CpioReader::new(bytes.as_slice(), &[], None)?;
+
+        let err = super::validate_cpio_payload_size(&reader, 0, 4).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::FileSizeMismatch {
+                index: 0,
+                left: FileSizeSource::RpmMetadata,
+                left_size: 4,
+                right: FileSizeSource::CpioArchive,
+                right_size: 3,
+            }
+        ));
+
+        Ok(())
+    }
 
     pub mod pkgs {
         pub mod v4 {
@@ -1179,7 +1406,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[0].content().unwrap_or_default().len(),
+                size: files[0].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::CONFIG,
                 digest: Some(FileDigest {
@@ -1204,7 +1431,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[1].content().unwrap_or_default().len(),
+                size: files[1].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -1228,7 +1455,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[2].content().unwrap_or_default().len(),
+                size: files[2].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
@@ -1249,7 +1476,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[3].content().unwrap_or_default().len(),
+                size: files[3].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
@@ -1271,7 +1498,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[4].content().unwrap_or_default().len(),
+                size: files[4].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -1296,7 +1523,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[5].content().unwrap_or_default().len(),
+                size: files[5].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -1320,7 +1547,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[6].content().unwrap_or_default().len(),
+                size: files[6].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
@@ -1346,7 +1573,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[7].content().unwrap_or_default().len(),
+                size: files[7].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::DOC,
                 digest: Some(FileDigest {
@@ -1371,7 +1598,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[8].content().unwrap_or_default().len(),
+                size: files[8].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -1395,7 +1622,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[9].content().unwrap_or_default().len(),
+                size: files[9].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::GHOST,
                 digest: None,
@@ -1416,7 +1643,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[10].content().unwrap_or_default().len(),
+                size: files[10].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
@@ -1483,7 +1710,7 @@ mod test_payload_integration {
                                 entry_path
                             );
                             assert_eq!(
-                                disk_content.len(),
+                                disk_content.len() as u64,
                                 file.metadata.size(),
                                 "Installed size mismatch for {:?}",
                                 entry_path
@@ -1591,7 +1818,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[0].content().unwrap_or_default().len(),
+                size: files[0].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
@@ -1613,7 +1840,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[1].content().unwrap_or_default().len(),
+                size: files[1].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::ARTIFACT,
                 digest: Some(FileDigest {
@@ -1638,7 +1865,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[2].content().unwrap_or_default().len(),
+                size: files[2].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::CONFIG,
                 digest: Some(FileDigest {
@@ -1666,7 +1893,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[3].content().unwrap_or_default().len(),
+                size: files[3].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::CONFIG | FileFlags::NOREPLACE,
                 digest: Some(FileDigest {
@@ -1694,7 +1921,7 @@ mod test_payload_integration {
                 group: Cow::from("bob"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[4].content().unwrap_or_default().len(),
+                size: files[4].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -1718,7 +1945,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[5].content().unwrap_or_default().len(),
+                size: files[5].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: None,
@@ -1740,7 +1967,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: files[6].content().unwrap_or_default().len(),
+                size: files[6].content().unwrap_or_default().len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -2203,7 +2430,7 @@ mod test_payload_integration {
                 group: Cow::from("root"),
                 language: Some(Cow::from("")),
                 modified_at: Timestamp(FIXTURE_SOURCE_DATE),
-                size: expected_sysusers.len(),
+                size: expected_sysusers.len() as u64,
                 rdev: 0,
                 flags: FileFlags::empty(),
                 digest: Some(FileDigest {
@@ -2304,7 +2531,7 @@ mod test_payload_integration {
             files[1].content().unwrap_or_default().len(),
             expected_spaces.len()
         );
-        assert_eq!(files[1].metadata.size, expected_spaces.len());
+        assert_eq!(files[1].metadata.size, expected_spaces.len() as u64);
         assert_eq!(files[1].content().unwrap_or_default().len(), 31);
 
         // File 2: /opt/rpm-file-types/rpm-rs-logo.png (binary content)
@@ -2335,7 +2562,7 @@ mod test_payload_integration {
             files[2].content().unwrap_or_default().len(),
             expected_png.len()
         );
-        assert_eq!(files[2].metadata.size, expected_png.len());
+        assert_eq!(files[2].metadata.size, expected_png.len() as u64);
         assert_eq!(files[2].content().unwrap_or_default().len(), 2017);
         // Verify PNG magic bytes
         assert_eq!(
@@ -2502,7 +2729,14 @@ mod test_payload_integration {
     fn test_ghost_record_in_payload() -> Result<(), Box<dyn std::error::Error>> {
         let mut package = Package::open(pkgs::v4::RPM_BASIC)?;
         let ghost_bytes = b"unexpected ghost content";
-        let regular_bytes = b"ordinary content";
+        let regular_size = usize::try_from(
+            package
+                .metadata
+                .find_file_entry(Path::new("/usr/bin/rpm-basic"))?
+                .expect("rpm-basic fixture has a regular file")
+                .size(),
+        )?;
+        let regular_bytes = vec![b'x'; regular_size];
         package.payload = {
             let mut buf = Vec::new();
             let mut ghost = CpioBuilder::new("./var/log/rpm-basic/basic.log")
@@ -2514,7 +2748,7 @@ mod test_payload_integration {
             let mut regular = CpioBuilder::new("./usr/bin/rpm-basic")
                 .mode(0o100755)
                 .write_cpio(buf, regular_bytes.len() as u32);
-            regular.write_all(regular_bytes)?;
+            regular.write_all(&regular_bytes)?;
             buf = regular.finish()?;
             trailer(buf)?
         };
