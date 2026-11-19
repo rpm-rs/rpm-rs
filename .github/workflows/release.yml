@@ -26,6 +26,10 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
       - if: runner.os != 'Linux'
@@ -36,6 +40,9 @@ jobs:
         with:
           args: --compatibility pypi --release --out dist
           manylinux: 2_28
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.whl
       - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}
@@ -44,12 +51,19 @@ jobs:
   build-sdist:
     name: Build sdist
     runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
       - uses: PyO3/maturin-action@v1
         with:
           command: sdist
           args: --out dist
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.tar.gz
       - uses: actions/upload-artifact@v7
         with:
           name: wheels-sdist
