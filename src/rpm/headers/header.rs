@@ -13,7 +13,7 @@ use std::{
 use super::*;
 use crate::{Timestamp, constants::*, errors::*};
 
-// These limits match librpm's header sanity checks and bound parsing allocations.
+// Various limits (matching librpm) for header sanity checks
 const HEADER_MAX_ENTRIES: u32 = 0x0000_ffff;
 const HEADER_MAX_ARRAY_ITEMS: u32 = 0x000f_ffff;
 const HEADER_MAX_DATA_SIZE: usize = 0x0fff_ffff;
@@ -964,6 +964,11 @@ fn read_header_bytes(input: &mut impl io::Read, size: usize) -> Result<Vec<u8>, 
     Ok(buf)
 }
 
+/// Fallibly reserve storage for decoded entry items before parsing them.
+///
+/// Header counts are (potentially) attacker-controlled, so allocation failure
+/// is reported as an RPM error instead of allowing `Vec` growth to panic or
+/// over-allocate while parsing.
 fn reserve_entry_items<T>(items: &mut Vec<T>, item_count: u32) -> Result<(), Error> {
     let item_count = item_count as usize;
     items
@@ -973,6 +978,10 @@ fn reserve_entry_items<T>(items: &mut Vec<T>, item_count: u32) -> Result<(), Err
         })
 }
 
+/// Return a slice of the data-store beginning at a validated entry offset.
+///
+/// This converts the signed on-disk offset safely and rejects offsets outside the store before
+/// callers construct a slice from it.
 fn entry_remaining<'a, T>(store: &'a [u8], entry: &IndexEntry<T>) -> Result<&'a [u8], Error>
 where
     T: num::FromPrimitive,
@@ -992,6 +1001,7 @@ where
         })
 }
 
+/// Return exactly `size` bytes of entry data after validating its store extent / upper bound.
 fn entry_data<'a, T>(store: &'a [u8], entry: &IndexEntry<T>, size: usize) -> Result<&'a [u8], Error>
 where
     T: num::FromPrimitive,
@@ -1007,6 +1017,11 @@ where
         })
 }
 
+/// Validate an entry's declared data extent before decoding or lazily accessing it.
+///
+/// Numeric entries must fit their item count and width within the store. String entries must
+/// contain their declared number of NUL-terminated values. Non-binary arrays are also bounded
+/// before their decoded values can drive an allocation.
 fn validate_entry_data<T>(store: &[u8], entry: &IndexEntry<T>) -> Result<(), Error>
 where
     T: num::FromPrimitive,
@@ -1055,6 +1070,7 @@ where
     Ok(())
 }
 
+/// Ensure `input` contains `count` consecutive NUL-terminated strings.
 fn validate_string_count(mut input: &[u8], count: u32) -> Result<(), Error> {
     for _ in 0..count {
         let nul = memchr::memchr(0, input).ok_or(Error::UnterminatedHeaderString)?;
@@ -1077,6 +1093,10 @@ pub(crate) struct IndexHeader {
 }
 
 impl IndexHeader {
+    /// Validate declared header sizes and return the byte count following the index header.
+    ///
+    /// The returned count covers the index entries and data store, excluding the fixed index
+    /// header prefix. Limits match librpm and bound the allocations made while parsing.
     fn checked_size(&self, limits: HeaderLimits) -> Result<usize, Error> {
         if self.num_entries > limits.max_entries {
             return Err(Error::HeaderEntryCountLimitExceeded {

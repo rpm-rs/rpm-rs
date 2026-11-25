@@ -13,10 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `DigestReport::result()` now fails when no header digests are present.
 - Reject RPM payload entries whose sizes conflict with metadata, including malformed symlinks.
-- Reject extraction paths that escape the destination through traversal or symbolic links.
+- Reject paths that escape the destination through traversal or symbolic links when building or extracting RPM contents.
 - Reject oversized headers and entries that reference data outside their header store.
-- Preserve empty symlink targets instead of treating them as absent metadata.
+- Reject RPM symlinks with empty targets.
 - Trigger accessors return `InconsistentTagArrayLengths` instead of panicking when trigger tag arrays disagree in length.
 - Without a signature backend, `apply_signature`, `apply_signature_in_place` and `decompress_payload` no longer silently drop OpenPGP signatures; they return the new `Error::SignatureBackendRequired` and leave the package or file unchanged.
 - The signature header is held to librpm's tighter limits (32 entries, 64 MiB of data) instead of the main-header limits.

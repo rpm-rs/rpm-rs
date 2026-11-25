@@ -115,6 +115,9 @@ pub enum Error {
         right_size: u64,
     },
 
+    #[error("symlink entry {index} has an empty target")]
+    EmptySymlinkTarget { index: usize },
+
     #[error("invalid tag value enum variant for {tag} with {variant}")]
     InvalidTagValueEnumVariant { tag: String, variant: u32 },
 

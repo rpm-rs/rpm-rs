@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::{fs, io};
 
 use std::fmt::Debug;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use base64::prelude::*;
 use digest::Digest;
@@ -1002,6 +1002,15 @@ impl PackageBuilder {
             return Err(Error::InvalidDestinationPath {
                 path: dest,
                 desc: "cannot package the root directory itself",
+            });
+        }
+        if Path::new(&dest)
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(Error::InvalidDestinationPath {
+                path: dest,
+                desc: "path contains a parent-directory component",
             });
         }
 

@@ -141,9 +141,12 @@ impl DigestReport {
     /// evaluated independently. A set passes if it contains at least one
     /// [`DigestStatus::Verified`] and no [`DigestStatus::Mismatch`] entries.
     /// The payload is considered valid if either set passes. This allows
-    /// verification to succeed both before and after
-    /// [`Package::decompress_payload`].
+    /// verification to succeed both before and after [`Package::decompress_payload`].
     pub fn result(&self) -> Result<(), Error> {
+        if !self.has_header_digest() {
+            return Err(Error::NoHeaderDigestError);
+        }
+
         let header_digests: [(&str, &DigestStatus); 3] = [
             ("header SHA1", &self.header_sha1),
             ("header SHA-256", &self.header_sha256),
@@ -2013,17 +2016,22 @@ impl<'a> FileTagArrays<'a> {
 
     fn entry(&self, i: usize) -> Result<FileEntry<'a>, Error> {
         let mode = FileMode::from(self.modes[i]);
-        // Symlink payload data is skipped according to this size, so malformed metadata could
-        // otherwise consume subsequent archive entries or exhaust memory.
-        if mode.file_type() == FileType::SymbolicLink && self.sizes[i] != self.links[i].len() as u64
-        {
-            return Err(Error::FileSizeMismatch {
-                index: i,
-                left: FileSizeSource::RpmMetadata,
-                left_size: self.sizes[i],
-                right: FileSizeSource::SymlinkTarget,
-                right_size: self.links[i].len() as u64,
-            });
+        if mode.file_type() == FileType::SymbolicLink {
+            if self.links[i].is_empty() {
+                return Err(Error::EmptySymlinkTarget { index: i });
+            }
+
+            // Symlink payload data is skipped according to this size, so malformed metadata
+            // could otherwise consume subsequent archive entries or exhaust memory.
+            if self.sizes[i] != self.links[i].len() as u64 {
+                return Err(Error::FileSizeMismatch {
+                    index: i,
+                    left: FileSizeSource::RpmMetadata,
+                    left_size: self.sizes[i],
+                    right: FileSizeSource::SymlinkTarget,
+                    right_size: self.links[i].len() as u64,
+                });
+            }
         }
 
         let dir_index = self.biject[i] as usize;
@@ -2079,6 +2087,24 @@ impl<'a> FileTagArrays<'a> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn digest_report_requires_header_digest() {
+        let report = DigestReport {
+            header_sha1: DigestStatus::NotPresent,
+            header_sha256: DigestStatus::NotPresent,
+            header_sha3_256: DigestStatus::NotPresent,
+            payload_sha256: DigestStatus::Verified,
+            payload_sha512: DigestStatus::NotChecked,
+            payload_sha3_256: DigestStatus::NotChecked,
+            payload_sha256_alt: DigestStatus::NotChecked,
+            payload_sha512_alt: DigestStatus::NotChecked,
+            payload_sha3_256_alt: DigestStatus::NotChecked,
+        };
+
+        assert!(matches!(report.result(), Err(Error::NoHeaderDigestError)));
+        assert!(!report.is_ok());
+    }
+
     fn file_arrays(mode: FileMode, size: u64, target: &'static str) -> FileTagArrays<'static> {
         FileTagArrays {
             algorithm: DigestAlgorithm::Md5,
@@ -2130,11 +2156,11 @@ mod tests {
     }
 
     #[test]
-    /// Preserve an empty symlink target when its declared size is zero.
-    fn preserves_empty_symlink_target() {
-        let entry = symlink_arrays(0, "").entry(0).unwrap();
+    /// Reject a zero-sized symlink because an empty target cannot be extracted.
+    fn rejects_empty_symlink_target() {
+        let err = symlink_arrays(0, "").entry(0).unwrap_err();
 
-        assert_eq!(entry.linkto(), Some(""));
+        assert!(matches!(err, Error::EmptySymlinkTarget { index: 0 }));
     }
 
     #[test]
