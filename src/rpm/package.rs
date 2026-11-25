@@ -141,9 +141,12 @@ impl DigestReport {
     /// evaluated independently. A set passes if it contains at least one
     /// [`DigestStatus::Verified`] and no [`DigestStatus::Mismatch`] entries.
     /// The payload is considered valid if either set passes. This allows
-    /// verification to succeed both before and after
-    /// [`Package::decompress_payload`].
+    /// verification to succeed both before and after [`Package::decompress_payload`].
     pub fn result(&self) -> Result<(), Error> {
+        if !self.has_header_digest() {
+            return Err(Error::NoHeaderDigestError);
+        }
+
         let header_digests: [(&str, &DigestStatus); 3] = [
             ("header SHA1", &self.header_sha1),
             ("header SHA-256", &self.header_sha256),
@@ -2063,6 +2066,24 @@ impl<'a> FileTagArrays<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn digest_report_requires_header_digest() {
+        let report = DigestReport {
+            header_sha1: DigestStatus::NotPresent,
+            header_sha256: DigestStatus::NotPresent,
+            header_sha3_256: DigestStatus::NotPresent,
+            payload_sha256: DigestStatus::Verified,
+            payload_sha512: DigestStatus::NotChecked,
+            payload_sha3_256: DigestStatus::NotChecked,
+            payload_sha256_alt: DigestStatus::NotChecked,
+            payload_sha512_alt: DigestStatus::NotChecked,
+            payload_sha3_256_alt: DigestStatus::NotChecked,
+        };
+
+        assert!(matches!(report.result(), Err(Error::NoHeaderDigestError)));
+        assert!(!report.is_ok());
+    }
 
     fn file_arrays(mode: FileMode, size: u64, target: &'static str) -> FileTagArrays<'static> {
         FileTagArrays {
