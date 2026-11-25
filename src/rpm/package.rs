@@ -398,6 +398,9 @@ impl Package {
     /// The signature header is rebuilt to update the header+payload length and strip
     /// legacy header+payload tags (MD5, PGP/GPG) that are invalidated by the
     /// payload change. Header-only signatures and digests are preserved.
+    /// Preserving signatures needs a signature backend: without `signature-pgp` or
+    /// `signature-sequoia`, a signed package returns
+    /// [`Error::SignatureBackendRequired`] and is left unchanged.
     ///
     /// This is a no-op if the payload compressor is already [`CompressionType::None`].
     #[cfg(feature = "payload")]
@@ -408,13 +411,14 @@ impl Package {
         let mut decompressed = Vec::new();
         crate::decompress_stream(io::Cursor::new(self.payload.as_slice()))?
             .read_to_end(&mut decompressed)?;
-        self.payload = decompressed;
 
+        // Build the new signature header first, so that an error leaves the package unchanged.
         let header_bytes = self.header_bytes()?;
-        let content_length = header_bytes.len() as u64 + self.payload.len() as u64;
+        let content_length = header_bytes.len() as u64 + decompressed.len() as u64;
         self.metadata.signature = SignatureHeaderBuilder::from_existing(&self.metadata.signature)?
             .set_content_length(content_length)
             .build()?;
+        self.payload = decompressed;
 
         Ok(())
     }
@@ -444,6 +448,9 @@ impl Package {
     /// Header digests (SHA-256, SHA-1, SHA3-256) are recalculated automatically.
     /// Signatures are deduplicated by issuer fingerprint, so signing with the
     /// same key replaces the previous signature rather than appending.
+    ///
+    /// Returns [`Error::SignatureBackendRequired`] if the crate was built
+    /// without `signature-pgp` or `signature-sequoia`.
     pub fn apply_signature(&mut self, signature: Vec<u8>) -> Result<(), Error> {
         self.metadata.signature = SignatureHeaderBuilder::from_existing(&self.metadata.signature)?
             .add_openpgp_signature(signature)
@@ -508,6 +515,9 @@ impl Package {
     /// The provided signature bytes are not validated — it is the caller's
     /// responsibility to ensure that the signature is a valid OpenPGP
     /// signature over this package's header bytes.
+    ///
+    /// Returns [`Error::SignatureBackendRequired`] without touching the file if
+    /// the crate was built without `signature-pgp` or `signature-sequoia`.
     ///
     /// The signature header's reserved space is adjusted so that the new
     /// signature header occupies exactly the same number of bytes as the
@@ -1203,6 +1213,16 @@ impl PackageMetadata {
         let versions = self.header.get_entry_data_as_string_array(versions_tag)?;
         let cond_flags = self.header.get_entry_data_as_u32_array(cond_flags_tag)?;
         let indices = self.header.get_entry_data_as_u32_array(index_tag)?;
+
+        // Each script has one program, and each condition has a name, version, flags and
+        // script index. Arrays of different lengths come from a malformed header.
+        if progs.len() != scripts.len()
+            || versions.len() != names.len()
+            || cond_flags.len() != names.len()
+            || indices.len() != names.len()
+        {
+            return Err(Error::InconsistentTagArrayLengths);
+        }
 
         // Build triggers: group conditions by their script index
         let num_scripts = scripts.len();

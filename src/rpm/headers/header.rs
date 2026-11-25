@@ -19,6 +19,26 @@ const HEADER_MAX_ARRAY_ITEMS: u32 = 0x000f_ffff;
 const HEADER_MAX_DATA_SIZE: usize = 0x0fff_ffff;
 const HEADER_MAX_SIZE: usize = 256 * 1024 * 1024;
 
+/// Entry-count and data-store limits for one kind of header, as in librpm's
+/// `hdrblobVerifyLengths()`.
+#[derive(Clone, Copy, Debug)]
+struct HeaderLimits {
+    max_entries: u32,
+    max_data_size: usize,
+}
+
+impl HeaderLimits {
+    const MAIN: Self = Self {
+        max_entries: HEADER_MAX_ENTRIES,
+        max_data_size: HEADER_MAX_DATA_SIZE,
+    };
+    /// librpm accepts far less in the signature header than in the main header.
+    const SIGNATURE: Self = Self {
+        max_entries: 32,
+        max_data_size: 64 * 1024 * 1024,
+    };
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Header<T: Tag> {
     pub(crate) index_header: IndexHeader,
@@ -75,22 +95,27 @@ where
     }
 
     pub(crate) fn parse(input: &mut impl io::BufRead) -> Result<Header<T>, Error> {
+        Self::parse_with_limits(input, HeaderLimits::MAIN)
+    }
+
+    fn parse_with_limits(
+        input: &mut impl io::BufRead,
+        limits: HeaderLimits,
+    ) -> Result<Header<T>, Error> {
         let mut buf: [u8; INDEX_HEADER_SIZE as usize] = [0; INDEX_HEADER_SIZE as usize];
         input.read_exact(&mut buf)?;
         let index_header = IndexHeader::parse(&buf)?;
         // read rest of header (index + data portions)
-        let size_rest = index_header.checked_size()?;
-        let mut buf = Vec::new();
-        buf.try_reserve_exact(size_rest)
-            .map_err(|_| Error::HeaderAllocationFailed { size: size_rest })?;
-        buf.resize(size_rest, 0);
-        input.read_exact(&mut buf)?;
+        let size_rest = index_header.checked_size(limits)?;
+        let buf = read_header_bytes(input, size_rest)?;
         Self::parse_header(index_header, &buf[..])
     }
 
     /// Given a pre-parsed index header, parse the rest of the header
     fn parse_header(index_header: IndexHeader, mut bytes: &[u8]) -> Result<Header<T>, Error> {
-        index_header.checked_size()?;
+        // `parse_with_limits` has already applied the limits for this kind of header;
+        // this only keeps direct callers within the widest ones.
+        index_header.checked_size(HeaderLimits::MAIN)?;
         // parse all entries
         let mut entries: Vec<IndexEntry<T>> = Vec::new();
         entries
@@ -629,7 +654,8 @@ impl Header<IndexSignatureTag> {
     pub(crate) fn parse_signature(
         input: &mut impl io::BufRead,
     ) -> Result<Header<IndexSignatureTag>, Error> {
-        let result: Header<IndexSignatureTag> = Self::parse(input)?;
+        let result: Header<IndexSignatureTag> =
+            Self::parse_with_limits(input, HeaderLimits::SIGNATURE)?;
         // if the size of our store is not a modulo of 8, we discard the padding bytes
         let padding = result.padding_required();
         if padding > 0 {
@@ -918,6 +944,26 @@ fn parse_binary_entry(
     Ok(())
 }
 
+/// Largest piece of a header that is read into memory at once.
+const HEADER_READ_CHUNK: usize = 1024 * 1024;
+
+/// Read the `size` bytes that follow a header's index header.
+///
+/// The buffer grows with the data actually read, so a short input that declares a large
+/// header fails at its end instead of first allocating the whole declared size.
+fn read_header_bytes(input: &mut impl io::Read, size: usize) -> Result<Vec<u8>, Error> {
+    let mut buf = Vec::new();
+    while buf.len() < size {
+        let start = buf.len();
+        let chunk = (size - start).min(HEADER_READ_CHUNK);
+        buf.try_reserve(chunk)
+            .map_err(|_| Error::HeaderAllocationFailed { size })?;
+        buf.resize(start + chunk, 0);
+        input.read_exact(&mut buf[start..])?;
+    }
+    Ok(buf)
+}
+
 /// Fallibly reserve storage for decoded entry items before parsing them.
 ///
 /// Header counts are (potentially) attacker-controlled, so allocation failure
@@ -1051,19 +1097,19 @@ impl IndexHeader {
     ///
     /// The returned count covers the index entries and data store, excluding the fixed index
     /// header prefix. Limits match librpm and bound the allocations made while parsing.
-    fn checked_size(&self) -> Result<usize, Error> {
-        if self.num_entries > HEADER_MAX_ENTRIES {
+    fn checked_size(&self, limits: HeaderLimits) -> Result<usize, Error> {
+        if self.num_entries > limits.max_entries {
             return Err(Error::HeaderEntryCountLimitExceeded {
                 count: self.num_entries,
-                limit: HEADER_MAX_ENTRIES,
+                limit: limits.max_entries,
             });
         }
         let data_size = self.data_section_size as usize;
-        if data_size > HEADER_MAX_DATA_SIZE {
+        if data_size > limits.max_data_size {
             return Err(Error::HeaderSizeLimitExceeded {
                 section: "data store",
                 size: data_size,
-                limit: HEADER_MAX_DATA_SIZE,
+                limit: limits.max_data_size,
             });
         }
         let index_size = (self.num_entries as usize)
@@ -1518,6 +1564,83 @@ mod test {
             } if count == HEADER_MAX_ARRAY_ITEMS + 1
         ));
         Ok(())
+    }
+
+    fn index_header_bytes(num_entries: u32, data_size: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        IndexHeader::new(num_entries, data_size)
+            .write(&mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    /// The signature header gets librpm's tighter entry limit; the main header does not.
+    fn rejects_excessive_signature_header_entry_count() {
+        let bytes = index_header_bytes(HeaderLimits::SIGNATURE.max_entries + 1, 0);
+
+        let err = Header::parse_signature(&mut io::Cursor::new(&bytes)).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::HeaderEntryCountLimitExceeded {
+                count: 33,
+                limit: 32
+            }
+        ));
+
+        // The same count is fine for a main header, which then runs out of input.
+        let err = Header::<IndexTag>::parse(&mut io::Cursor::new(&bytes)).unwrap_err();
+        assert!(matches!(err, Error::Io(_)), "{err:?}");
+    }
+
+    #[test]
+    /// The signature header gets librpm's tighter data-store limit; the main header does not.
+    fn rejects_excessive_signature_header_store_size() {
+        let limit = HeaderLimits::SIGNATURE.max_data_size;
+        let bytes = index_header_bytes(1, limit as u32 + 1);
+
+        let err = Header::parse_signature(&mut io::Cursor::new(&bytes)).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::HeaderSizeLimitExceeded { limit: l, .. } if l == limit
+        ));
+
+        let err = Header::<IndexTag>::parse(&mut io::Cursor::new(&bytes)).unwrap_err();
+        assert!(matches!(err, Error::Io(_)), "{err:?}");
+    }
+
+    /// A reader that records the largest buffer it is asked to fill.
+    struct RecordingReader<'a> {
+        data: &'a [u8],
+        largest_request: usize,
+    }
+
+    impl io::Read for RecordingReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.largest_request = self.largest_request.max(buf.len());
+            io::Read::read(&mut self.data, buf)
+        }
+    }
+
+    #[test]
+    /// A short input that declares a large header must fail at the end of its data, without
+    /// first allocating (and handing the reader) a buffer of the declared size.
+    fn short_input_does_not_allocate_declared_header_size() {
+        let mut bytes = index_header_bytes(1, 16 * HEADER_READ_CHUNK as u32);
+        bytes.extend_from_slice(&[0; 64]);
+        let mut reader = RecordingReader {
+            data: &bytes,
+            largest_request: 0,
+        };
+
+        let err = Header::<IndexTag>::parse(&mut io::BufReader::new(&mut reader)).unwrap_err();
+
+        assert!(matches!(err, Error::Io(_)), "{err:?}");
+        assert!(
+            reader.largest_request <= HEADER_READ_CHUNK,
+            "asked the reader to fill {} bytes",
+            reader.largest_request
+        );
     }
 
     #[test]
